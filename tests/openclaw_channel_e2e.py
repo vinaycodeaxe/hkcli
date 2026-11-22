@@ -80,9 +80,14 @@ def relay_subscribed(fake: FakeHike) -> bool:
         return any(f"u:{USER}" in s["topics"] for s in fake.sessions)
 
 
-def hkcli_processes(hkcli: str) -> list[str]:
+def hkcli_sync_processes(hkcli: str) -> list[tuple[int, str]]:
     proc = subprocess.run(["pgrep", "-af", hkcli], capture_output=True, text=True)
-    return [line for line in proc.stdout.splitlines() if " sync" in line]
+    found = []
+    for line in proc.stdout.splitlines():
+        pid, _, cmd = line.partition(" ")
+        if cmd.startswith(hkcli) and " sync" in cmd:
+            found.append((int(pid), cmd))
+    return found
 
 
 def main() -> int:
@@ -171,10 +176,15 @@ def main() -> int:
                 failure = failure or SystemExit("gateway did not stop within 90s of SIGTERM")
         if gateway is not None:
             time.sleep(1)
-            leftovers = hkcli_processes(hkcli)
+            leftovers = hkcli_sync_processes(hkcli)
+            for pid, _ in leftovers:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             if leftovers:
-                subprocess.run(["pkill", "-9", "-f", hkcli])
-                failure = failure or SystemExit("hkcli left running after the Gateway stopped:\n" + "\n".join(leftovers))
+                listing = "\n".join(f"{pid} {cmd}" for pid, cmd in leftovers)
+                failure = failure or SystemExit(f"hkcli left running after the Gateway stopped:\n{listing}")
             log(f"gateway exit code: {gateway.returncode}")
             lines = gateway_log.read_text(errors="replace").splitlines() if gateway_log.exists() else []
             print("----- gateway log (tail) -----\n" + "\n".join(lines[-(600 if failure else 150):]), flush=True)

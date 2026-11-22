@@ -1,0 +1,193 @@
+name: plugin
+
+# OpenClaw channel plugin (openclaw-plugin/): type-check, build and unit tests; pack it and load it
+# into the pinned OpenClaw release; run it end to end against the fake Hike servers (no LLM);
+# and dry-run the ClawHub publish on pushes.
+
+on:
+  push:
+    paths:
+      - "openclaw-plugin/**"
+      - "tests/**"
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "requirements-dev.txt"
+      - ".github/workflows/plugin.yml"
+      - ".github/workflows/plugin-publish.yml"
+  pull_request:
+    paths:
+      - "openclaw-plugin/**"
+      - "tests/**"
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "requirements-dev.txt"
+      - ".github/workflows/plugin.yml"
+      - ".github/workflows/plugin-publish.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: openclaw-plugin
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: openclaw-plugin/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Manifest schema is up to date
+        run: npm run manifest:check
+
+      - name: Unit tests
+        run: npm test
+
+  package:
+    name: pack and load in OpenClaw
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENCLAW_STATE_DIR: ${{ github.workspace }}/../openclaw-state
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: openclaw-plugin/package-lock.json
+
+      - name: Pack
+        working-directory: openclaw-plugin
+        run: |
+          set -euo pipefail
+          mkdir -p "$OPENCLAW_STATE_DIR" "$RUNNER_TEMP/pack"
+          npm ci --no-audit --no-fund
+          npm pack --pack-destination "$RUNNER_TEMP/pack"
+          tar -tzf "$RUNNER_TEMP"/pack/*.tgz | sort
+
+      - name: Install the pinned OpenClaw
+        working-directory: openclaw-plugin
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./package.json").openclaw.build.openclawVersion')
+          npm install --global --no-audit --no-fund "openclaw@${version}"
+          openclaw --version
+
+      - name: Lint the plugin
+        run: openclaw plugins lint --root openclaw-plugin
+
+      - name: Install the packed plugin
+        run: openclaw plugins install "npm-pack:$(ls "$RUNNER_TEMP"/pack/*.tgz)" --force --accept-capabilities
+
+      - name: Inspect the loaded runtime
+        run: |
+          set -euo pipefail
+          openclaw plugins inspect hike --runtime --json > "$RUNNER_TEMP/inspect.json"
+          node -e '
+            const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            console.log(JSON.stringify(report, null, 2).slice(0, 20000));
+            const text = JSON.stringify(report);
+            if (!text.includes("\"hike\"")) throw new Error("inspect output does not mention the hike channel");
+          ' "$RUNNER_TEMP/inspect.json"
+
+      - name: Upload package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hkcli-channel-package
+          path: ${{ runner.temp }}/pack/*.tgz
+          if-no-files-found: error
+
+  e2e:
+    name: end to end (fake Hike, real Gateway)
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Build hkcli 0.3.0
+        run: go build -ldflags "-X github.com/vinaycodeaxe/hkcli/internal/version.Version=0.3.0" -o "$RUNNER_TEMP/bin/hkcli" ./cmd/hkcli
+
+      - name: Install test tools
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements-dev.txt
+          version=$(node -p 'require("./openclaw-plugin/package.json").openclaw.build.openclawVersion')
+          npm install --global --no-audit --no-fund "openclaw@${version}"
+
+      - name: Download package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: hkcli-channel-package
+          path: ${{ runner.temp }}/pack
+
+      - name: Pairing over a real Gateway
+        run: python tests/openclaw_channel_e2e.py --hkcli "$RUNNER_TEMP/bin/hkcli" --plugin "$(ls "$RUNNER_TEMP"/pack/*.tgz)"
+
+  clawhub-dry-run:
+    name: ClawHub dry run
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: build
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/plugin-publish.yml
+    with:
+      dry_run: true
+    secrets:
+      CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}

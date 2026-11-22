@@ -1,0 +1,88 @@
+name: plugin-publish
+
+# Publishes the OpenClaw channel plugin (openclaw-plugin/, @vinaycodeaxe/hkcli-channel) to ClawHub.
+# Run it by hand (Actions > plugin-publish > Run workflow); it is a dry run unless dry_run is
+# unchecked. plugin.yml calls it with dry_run=true on every push to validate the package.
+# Real publishes use the CLAWHUB_TOKEN secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview only (publish nothing)
+        type: boolean
+        default: true
+      changelog:
+        description: What changed (optional)
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      dry_run:
+        type: boolean
+        required: true
+      changelog:
+        type: string
+        default: ""
+    secrets:
+      CLAWHUB_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    name: Build the package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: openclaw-plugin
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: openclaw-plugin/package-lock.json
+
+      - name: Build, test and pack
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm run build
+          npm run manifest:check
+          npm test
+          mkdir -p "$RUNNER_TEMP/clawpack"
+          npm pack --pack-destination "$RUNNER_TEMP/clawpack"
+
+      - name: Upload package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hkcli-channel-clawpack
+          path: ${{ runner.temp }}/clawpack/*.tgz
+          if-no-files-found: error
+
+  publish:
+    name: Publish to ClawHub
+    needs: pack
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: openclaw/clawhub/.github/workflows/package-publish.yml@dfb087d90079c84f74ed0c5de27c302696d42178 # v0.27.0
+    with:
+      package_artifact_name: hkcli-channel-clawpack
+      source_path: openclaw-plugin
+      dry_run: ${{ inputs.dry_run }}
+      changelog: ${{ inputs.changelog }}
+      topics: hike,messaging,chat
+    secrets:
+      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}
