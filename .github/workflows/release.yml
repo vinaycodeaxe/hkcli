@@ -1,0 +1,116 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install and test
+        run: |
+          python -m pip install -e ".[test]"
+          python -m pytest -q
+
+      - name: Check tag, version and changelog
+        run: |
+          version=$(python -c 'import hikecli; print(hikecli.__version__)')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in src/hikecli/__init__.py"
+            exit 1
+          fi
+          python scripts/release_notes.py "$version" > /dev/null
+
+      - name: Build
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check --strict dist/*
+
+      - name: Upload build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/hikecli/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  github-release:
+    name: GitHub release
+    needs: pypi
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/release_notes.py "${GITHUB_REF_NAME#v}" > release-notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "hikecli $GITHUB_REF_NAME" --notes-file release-notes.md --verify-tag
+
+  clawhub:
+    name: Publish OpenClaw skill
+    needs: pypi
+    permissions:
+      contents: read
+      id-token: write
+    uses: openclaw/clawhub/.github/workflows/skill-publish.yml@dfb087d90079c84f74ed0c5de27c302696d42178 # v0.27.0
+    with:
+      skill_path: skills/hikecli
+      # Dry run until the repository variable CLAWHUB_PUBLISH is "true" and the CLAWHUB_TOKEN secret is set.
+      dry_run: ${{ vars.CLAWHUB_PUBLISH != 'true' }}
+      changelog: "hikecli ${{ github.ref_name }}"
+    secrets:
+      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}

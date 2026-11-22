@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+# Local stores hold login tokens and message history. Never commit them.
+.hikecli/
+session.json
+*.db
+*.db-wal
+*.db-shm

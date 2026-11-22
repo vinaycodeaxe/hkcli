@@ -1,0 +1,4 @@
+# Normalize line endings in the repository; Windows checkouts still get CRLF where Git converts them.
+* text=auto eol=lf
+*.png binary
+*.ico binary
