@@ -85,11 +85,25 @@ export function createHikeInboundHandler(params: HikeInboundHandlerParams) {
     }
   };
 
-  return async function handleHikeMessage(message: HikeInboundMessage, commit: () => void = () => {}): Promise<void> {
+  return async function handleHikeMessage(
+    message: HikeInboundMessage,
+    commit: () => Promise<boolean> = async () => true,
+  ): Promise<void> {
     const rawBody = inboundBody(message);
     if (!rawBody || !message.senderId) {
       return;
     }
+    // Recorded as handled right before the first side effect, so a crash or restart never answers
+    // twice; once the account is stopping it stays unhandled for the next run instead.
+    const markHandled = async (): Promise<boolean> => {
+      if (params.signal.aborted) {
+        return false;
+      }
+      if (!(await commit())) {
+        log.warn(`hike: could not record message ${message.id} as handled; replying anyway`);
+      }
+      return true;
+    };
     params.onInbound?.(message.ts);
     core.channel.activity.record({ channel: HIKE_CHANNEL_ID, accountId, direction: "inbound", at: Date.now() });
 
@@ -171,10 +185,9 @@ export function createHikeInboundHandler(params: HikeInboundHandlerParams) {
       });
 
     if (access.ingress.admission === "pairing-required") {
-      if (params.signal.aborted) {
+      if (!(await markHandled())) {
         return;
       }
-      commit();
       await pairing.issueChallenge({
         senderId: message.senderId,
         senderIdLine: `Your Hike user id: ${message.senderId}`,
@@ -274,10 +287,9 @@ export function createHikeInboundHandler(params: HikeInboundHandlerParams) {
       },
     });
 
-    if (params.signal.aborted) {
+    if (!(await markHandled())) {
       return;
     }
-    commit();
     await core.channel.inbound.dispatch({
       cfg,
       channel: HIKE_CHANNEL_ID,

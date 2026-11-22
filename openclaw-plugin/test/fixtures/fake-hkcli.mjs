@@ -36,7 +36,7 @@ function option(name) {
   return index >= 0 ? args[index + 1] : undefined;
 }
 
-const VALUE_FLAGS = new Set(["--store", "--to", "--message", "--reply-to", "--limit", "--chat"]);
+const VALUE_FLAGS = new Set(["--store", "--to", "--message", "--reply-to", "--limit", "--chat", "--before"]);
 const command = args
   .filter((arg, index) => !arg.startsWith("--") && !VALUE_FLAGS.has(args[index - 1]))
   .join(" ");
@@ -70,13 +70,25 @@ if (command === "send text") {
 }
 
 if (command === "chats list") {
-  print({ success: true, data: JSON.parse(env.FAKE_HKCLI_CHATS ?? "[]"), error: null });
+  log({ command, args });
+  const chats = JSON.parse(env.FAKE_HKCLI_CHATS ?? "[]").filter(
+    (chat) => !args.includes("--direct") || chat.type === "one_to_one",
+  );
+  print({ success: true, data: chats.slice(0, Number(option("--limit") ?? 50)), error: null });
   process.exit(0);
 }
 
 if (command === "messages list") {
-  const all = JSON.parse(env.FAKE_HKCLI_MESSAGES ?? "{}");
-  print({ success: true, data: all[option("--chat")] ?? [], error: null });
+  // Like hkcli: the newest --limit messages older than --before, oldest first.
+  const all = JSON.parse(env.FAKE_HKCLI_MESSAGES ?? "{}")[option("--chat")] ?? [];
+  const before = option("--before") === undefined ? Infinity : Number(option("--before"));
+  const page = all
+    .filter((row) => row.ts < before)
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, Number(option("--limit") ?? 50))
+    .reverse();
+  log({ command, chat: option("--chat"), before: option("--before") ?? null });
+  print({ success: true, data: page, error: null });
   process.exit(0);
 }
 

@@ -182,7 +182,7 @@ jobs:
           name: hkcli-channel-package
           path: ${{ runner.temp }}/pack
 
-      - name: Pairing over a real Gateway
+      - name: Pairing, groups and restarts over a real Gateway
         run: python tests/openclaw_channel_e2e.py --hkcli "$RUNNER_TEMP/bin/hkcli" --plugin "$(ls "$RUNNER_TEMP"/pack/*.tgz)"
 
   clawhub-dry-run:

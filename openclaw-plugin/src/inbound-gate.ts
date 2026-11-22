@@ -1,25 +1,32 @@
-// Decides which inbound messages are new: drops our own echoes, duplicates, and history older
-// than the persisted cursor, so a restart answers what arrived while the gateway was down.
+// Decides which inbound messages are new: drops our own echoes, duplicates and history, and
+// keeps the cursor that lets a restart (or a reconnect) answer what arrived while sync was down.
 
 export type InboundCursorState = {
-  v: 1;
-  /** Time (epoch ms, local clock) up to which every inbound message was handled. */
+  v: 2;
+  /** Time (epoch ms) up to which every inbound message was handled or deliberately skipped. */
   cursor: number;
-  /** Ids of recently handled messages, oldest first. */
-  seen: string[];
+  /** Read-backs never go below this; raised only when `seen` overflowed. */
+  floor?: number;
+  /** Handled direct messages ([id, ts]) newer than the oldest bound a read-back may still use. */
+  seen: Array<[string, number]>;
 };
 
 export type InboundCursorStore = {
-  load(): Promise<InboundCursorState | undefined>;
+  load(): Promise<unknown>;
   save(state: InboundCursorState): Promise<void>;
 };
 
 export type InboundGateDecision = "accept" | "self" | "duplicate" | "stale";
 
+export type GateMessage = { id: string; fromMe: boolean; ts: number; chatType: "direct" | "group" };
+
 export type InboundGateOptions = {
   store: InboundCursorStore;
-  /** Messages older than (persisted cursor - graceMs) are history; the first start uses now. */
+  /** Slack for sender clocks and delivery delays around the cursor. */
   graceMs?: number;
+  /** Messages older than this are never answered, however long sync was down. */
+  maxAgeMs?: number;
+  /** Hard cap on remembered ids (plugin state values are limited to 64 KiB). */
   maxSeen?: number;
   saveDelayMs?: number;
   now?: () => number;
@@ -27,61 +34,92 @@ export type InboundGateOptions = {
 };
 
 export const DEFAULT_CURSOR_GRACE_MS = 5 * 60_000;
+export const DEFAULT_MAX_RECOVERY_AGE_MS = 12 * 60 * 60_000;
+const DEFAULT_MAX_SEEN = 800;
+const RECENT_GROUP_IDS = 1000;
 
-function isState(value: unknown): value is InboundCursorState {
+type LoadedState = { cursor: number; floor: number; seen: Map<string, number> };
+
+function finite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function readState(value: unknown): LoadedState | undefined {
   if (typeof value !== "object" || value === null) {
-    return false;
+    return undefined;
   }
-  const state = value as Partial<InboundCursorState>;
-  return (
-    state.v === 1 &&
-    typeof state.cursor === "number" &&
-    Number.isFinite(state.cursor) &&
-    Array.isArray(state.seen)
-  );
+  const state = value as { v?: unknown; cursor?: unknown; floor?: unknown; seen?: unknown };
+  if (!finite(state.cursor) || !Array.isArray(state.seen)) {
+    return undefined;
+  }
+  const seen = new Map<string, number>();
+  if (state.v === 2) {
+    for (const entry of state.seen) {
+      if (Array.isArray(entry) && typeof entry[0] === "string" && finite(entry[1])) {
+        seen.set(entry[0], entry[1]);
+      }
+    }
+    return { cursor: state.cursor, floor: finite(state.floor) ? state.floor : 0, seen };
+  }
+  if (state.v === 1) {
+    // Version 1 kept bare ids; they are at most a grace period older than the cursor.
+    for (const id of state.seen) {
+      if (typeof id === "string") {
+        seen.set(id, state.cursor);
+      }
+    }
+    return { cursor: state.cursor, floor: 0, seen };
+  }
+  return undefined;
 }
 
 export class InboundGate {
-  /** Fixed for the lifetime of this gate (one account run). */
-  readonly threshold: number;
+  /** Lower bound for live events in this run: (cursor at start) - grace. */
+  readonly liveFloor: number;
   private cursor: number;
-  private readonly seen: Set<string>;
-  /** Accepted but not yet handled; never persisted, so a restart picks them up again. */
-  private readonly pending = new Map<string, number>();
+  private recoveryFloor: number;
+  private readonly seen: Map<string, number>;
+  /** Group messages are never read back, so their ids are only remembered in memory. */
+  private readonly recentGroupIds = new Set<string>();
+  /** Accepted but not handled yet; never persisted, so the next run offers them again. */
+  private readonly pending = new Map<string, { ts: number; direct: boolean }>();
+  private readonly activeBounds: number[] = [];
   private readonly store: InboundCursorStore;
+  private readonly graceMs: number;
+  private readonly maxAgeMs: number;
   private readonly maxSeen: number;
   private readonly saveDelayMs: number;
   private readonly now: () => number;
   private readonly onError: (error: unknown) => void;
   private dirty = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
-  private writing: Promise<void> | undefined;
+  private chain: Promise<boolean> = Promise.resolve(true);
 
-  private constructor(options: InboundGateOptions, state: InboundCursorState | undefined) {
+  private constructor(options: InboundGateOptions, state: LoadedState | undefined) {
     this.store = options.store;
     this.now = options.now ?? Date.now;
-    // Keyed plugin state values are capped at 64 KiB; 500 ids stay far below that.
-    this.maxSeen = options.maxSeen ?? 500;
+    this.graceMs = options.graceMs ?? DEFAULT_CURSOR_GRACE_MS;
+    this.maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_RECOVERY_AGE_MS;
+    this.maxSeen = options.maxSeen ?? DEFAULT_MAX_SEEN;
     this.saveDelayMs = options.saveDelayMs ?? 1000;
     this.onError = options.onError ?? (() => {});
-    const started = this.now();
-    this.cursor = state ? Math.min(state.cursor, started) : started;
-    this.threshold = this.cursor - (options.graceMs ?? DEFAULT_CURSOR_GRACE_MS);
-    this.seen = new Set(state?.seen.filter((id) => typeof id === "string") ?? []);
-    this.trimSeen();
+    const openedAt = this.now();
+    this.cursor = state ? Math.min(state.cursor, openedAt) : openedAt;
+    this.liveFloor = this.cursor - this.graceMs;
+    this.recoveryFloor = state?.floor ?? 0;
+    this.seen = state?.seen ?? new Map();
     this.dirty = !state;
   }
 
   static async open(options: InboundGateOptions): Promise<InboundGate> {
-    let state: InboundCursorState | undefined;
+    let state: LoadedState | undefined;
     try {
-      const loaded = await options.store.load();
-      state = isState(loaded) ? loaded : undefined;
+      state = readState(await options.store.load());
     } catch (error) {
       options.onError?.(error);
     }
     const gate = new InboundGate(options, state);
-    if (gate.dirty) {
+    if (!state) {
       await gate.flush();
     }
     return gate;
@@ -91,43 +129,51 @@ export class InboundGate {
     return this.cursor;
   }
 
-  check(message: { id: string; fromMe: boolean; ts: number }): InboundGateDecision {
+  /** Live events use the run's floor; read-backs pass the bound they read from. */
+  check(message: GateMessage, bound: number = this.liveFloor): InboundGateDecision {
     if (message.fromMe) {
       return "self";
     }
-    if (this.seen.has(message.id) || this.pending.has(message.id)) {
+    if (this.seen.has(message.id) || this.pending.has(message.id) || this.recentGroupIds.has(message.id)) {
       return "duplicate";
     }
-    if (message.ts < this.threshold) {
+    if (message.ts < bound || message.ts < this.now() - this.maxAgeMs) {
       return "stale";
     }
-    this.pending.set(message.id, message.ts);
+    const direct = message.chatType === "direct";
+    this.pending.set(message.id, { ts: message.ts, direct });
+    if (!direct) {
+      this.recentGroupIds.add(message.id);
+      if (this.recentGroupIds.size > RECENT_GROUP_IDS) {
+        this.recentGroupIds.delete(this.recentGroupIds.values().next().value as string);
+      }
+    }
     return "accept";
   }
 
-  /** Marks an accepted message as handled; call before its (non-repeatable) side effects. */
-  complete(id: string): void {
-    const ts = this.pending.get(id);
-    if (ts === undefined) {
-      return;
+  /**
+   * Marks an accepted message as handled and saves that before the caller acts on it, so a
+   * crash or restart never answers it twice. Returns false when the save failed.
+   */
+  async commit(id: string): Promise<boolean> {
+    const entry = this.pending.get(id);
+    if (!entry) {
+      return true;
     }
     this.pending.delete(id);
-    this.seen.add(id);
-    this.trimSeen();
+    // Only direct messages are ever read back from the store; group ids need no memory.
+    if (!entry.direct) {
+      return true;
+    }
+    this.seen.set(id, entry.ts);
     this.dirty = true;
-    this.advance(ts);
-    this.scheduleSave();
+    return await this.flush();
   }
 
-  /** Forgets an accepted message without handling it, so a later catch-up may offer it again. */
-  release(id: string): void {
-    this.pending.delete(id);
-  }
-
-  /** Everything before `time` was handled (for example after a complete catch-up). */
+  /** Everything before `time` was handled; queued messages hold the cursor back. */
   advance(time: number): void {
     let next = Math.min(time, this.now());
-    for (const ts of this.pending.values()) {
+    for (const { ts } of this.pending.values()) {
       next = Math.min(next, ts - 1);
     }
     if (next > this.cursor) {
@@ -136,31 +182,41 @@ export class InboundGate {
     }
   }
 
-  async flush(): Promise<void> {
+  /** Lower bound for reading the store back now; older messages were handled or skipped. */
+  beginRecovery(): number {
+    const since = Math.max(this.cursor - this.graceMs, this.now() - this.maxAgeMs, this.recoveryFloor);
+    this.activeBounds.push(since);
+    return since;
+  }
+
+  endRecovery(since: number): void {
+    const index = this.activeBounds.indexOf(since);
+    if (index >= 0) {
+      this.activeBounds.splice(index, 1);
+    }
+  }
+
+  flush(): Promise<boolean> {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
-    while (this.writing) {
-      await this.writing;
-    }
-    if (!this.dirty) {
-      return;
-    }
-    this.dirty = false;
-    const state: InboundCursorState = { v: 1, cursor: this.cursor, seen: [...this.seen] };
-    this.writing = this.store.save(state).then(
-      () => undefined,
-      (error: unknown) => {
+    this.chain = this.chain.then(async () => {
+      if (!this.dirty) {
+        return true;
+      }
+      this.dirty = false;
+      const state = this.snapshot();
+      try {
+        await this.store.save(state);
+        return true;
+      } catch (error) {
         this.dirty = true;
         this.onError(error);
-      },
-    );
-    try {
-      await this.writing;
-    } finally {
-      this.writing = undefined;
-    }
+        return false;
+      }
+    });
+    return this.chain;
   }
 
   private scheduleSave(): void {
@@ -175,13 +231,40 @@ export class InboundGate {
     this.timer.unref?.();
   }
 
-  private trimSeen(): void {
-    while (this.seen.size > this.maxSeen) {
-      const oldest = this.seen.values().next().value;
-      if (oldest === undefined) {
-        return;
+  private snapshot(): InboundCursorState {
+    this.prune();
+    const seen = [...this.seen].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    return {
+      v: 2,
+      cursor: this.cursor,
+      ...(this.recoveryFloor > 0 ? { floor: this.recoveryFloor } : {}),
+      seen,
+    };
+  }
+
+  /**
+   * Forgets ids no read-back can offer again: older than every bound in use (cursor - grace,
+   * running read-backs) or than the age limit. Count only matters past `maxSeen`, and then the
+   * read-back floor moves up instead of letting an old id be answered again.
+   */
+  private prune(): void {
+    const keepFrom = Math.max(
+      Math.min(this.cursor - this.graceMs, ...this.activeBounds),
+      this.now() - this.maxAgeMs,
+    );
+    for (const [id, ts] of this.seen) {
+      if (ts < keepFrom) {
+        this.seen.delete(id);
       }
-      this.seen.delete(oldest);
     }
+    if (this.seen.size <= this.maxSeen) {
+      return;
+    }
+    const oldestFirst = [...this.seen].sort((a, b) => a[1] - b[1]);
+    const dropped = oldestFirst.slice(0, oldestFirst.length - this.maxSeen);
+    for (const [id] of dropped) {
+      this.seen.delete(id);
+    }
+    this.recoveryFloor = Math.max(this.recoveryFloor, (dropped.at(-1)?.[1] ?? 0) + 1);
   }
 }

@@ -79,15 +79,17 @@ All keys live under `channels.hike` (or `channels.hike.accounts.<id>` for extra 
 Authorization always uses Hike user ids, never display names.
 
 Extra accounts: add `channels.hike.accounts.work = {}` and log in with
-`openclaw channels login --channel hike --account work`. Each account gets its own store.
+`openclaw channels login --channel hike --account work`. Each account gets its own store, and
+top-level keys other than `storeDir` are shared defaults. Once linked, the default account keeps
+running next to the named ones.
 
 ## What works in 0.1.0
 
 - Text in and out, in direct and group chats.
 - Photos, files, stickers and other media arrive as a short placeholder such as `[photo: a.jpg]`;
   the agent cannot see media yet and sends text only (links for attachments).
-- Messages that arrive while the Gateway is down are answered after it restarts (direct chats).
-  Hike history from before the first start is never answered.
+- Direct messages that arrive while the Gateway is down are answered after it restarts, up to
+  12 hours back. Hike history from before the first start is never answered.
 
 ## Troubleshooting
 

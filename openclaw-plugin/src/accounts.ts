@@ -28,11 +28,23 @@ function hikeSection(cfg: OpenClawConfig): HikeConfig | undefined {
 const helpers = createAccountListHelpers<HikeAccountConfig>(HIKE_CHANNEL_ID, {
   normalizeAccountId,
   omitKeys: ["defaultAccount"],
-  hasImplicitDefaultAccount: (cfg) => Boolean(hikeSection(cfg)?.storeDir?.trim()),
+  hasImplicitDefaultAccount: (cfg) => hasImplicitDefaultHikeAccount(hikeSection(cfg)),
 });
 
 export const listHikeAccountIds = helpers.listAccountIds;
 export const resolveDefaultHikeAccountId = helpers.resolveDefaultAccountId;
+
+/**
+ * Next to named accounts the top-level (default) account still counts once it has its own
+ * storeDir or is linked. Other top-level keys are shared defaults for every account, so they
+ * cannot tell whether the default account is in use.
+ */
+export function hasImplicitDefaultHikeAccount(
+  section: Pick<HikeConfig, "storeDir"> | undefined,
+  defaultStoreDir: string = defaultHikeStoreDir(DEFAULT_ACCOUNT_ID),
+): boolean {
+  return Boolean(section?.storeDir?.trim()) || isHikeAccountLinked({ storeDir: defaultStoreDir });
+}
 
 /** Account ids become directory names; keep them to a safe character set. */
 function safeDirName(accountId: string): string {

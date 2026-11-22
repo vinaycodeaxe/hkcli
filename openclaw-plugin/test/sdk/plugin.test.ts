@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
-import { listHikeAccountIds, resolveHikeAccount } from "../../src/accounts.ts";
+import { listHikeAccountIds, resolveDefaultHikeAccountId, resolveHikeAccount } from "../../src/accounts.ts";
 import { collectHikeStatusIssues, hikePlugin } from "../../src/channel.ts";
 import { HikeChannelConfigSchema } from "../../src/config-schema.ts";
 import { hikePairingReply } from "../../src/inbound.ts";
@@ -83,6 +83,27 @@ describe("accounts", () => {
     assert.equal(work.storeDir, path.join(state.dir, "hike", "work"));
     assert.equal(resolveHikeAccount({ cfg: cfg({ storeDir: "/srv/hike" }) }).storeDir, path.resolve("/srv/hike"));
     assert.ok(listHikeAccountIds(cfg({ accounts: { work: {} } })).includes("work"));
+  });
+
+  it("keeps a linked default account running next to named accounts", () => {
+    const own = scratchDir();
+    process.env.OPENCLAW_STATE_DIR = own.dir;
+    try {
+      const named = cfg({ enabled: true, dmPolicy: "pairing", groupPolicy: "allowlist", accounts: { work: {} } });
+      assert.deepEqual(listHikeAccountIds(named), ["work"]);
+      assert.equal(resolveDefaultHikeAccountId(named), "work");
+      assert.deepEqual(listHikeAccountIds(cfg({ storeDir: "/srv/hike", accounts: { work: {} } })), ["default", "work"]);
+
+      const store = path.join(own.dir, "hike", "default");
+      mkdirSync(store, { recursive: true });
+      writeFileSync(path.join(store, "session.json"), "{}");
+      assert.deepEqual(listHikeAccountIds(named), ["default", "work"]);
+      assert.equal(resolveDefaultHikeAccountId(named), "default");
+      assert.equal(resolveHikeAccount({ cfg: named }).storeDir, store);
+    } finally {
+      process.env.OPENCLAW_STATE_DIR = state.dir;
+      own.cleanup();
+    }
   });
 
   it("reports the account linked once hkcli saved a session", () => {

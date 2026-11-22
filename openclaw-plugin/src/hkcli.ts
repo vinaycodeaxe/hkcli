@@ -86,10 +86,11 @@ export const hkcliArgs = {
     ...storeArgs(storeDir),
     "chats",
     "list",
+    "--direct",
     "--limit",
     String(limit),
   ],
-  messagesList: (storeDir: string, chat: string, limit: number) => [
+  messagesList: (storeDir: string, chat: string, limit: number, before?: number) => [
     ...storeArgs(storeDir),
     "messages",
     "list",
@@ -97,6 +98,7 @@ export const hkcliArgs = {
     chat,
     "--limit",
     String(limit),
+    ...(before === undefined ? [] : ["--before", String(before)]),
   ],
 };
 

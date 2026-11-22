@@ -5,11 +5,14 @@ through `openclaw channels login` (the fake confirms the QR login by itself) and
 `openclaw gateway`. Then, over the fake relay: an unknown sender's DM gets the pairing reply;
 approving it through the Gateway with notify (the Control UI path) sends the confirmation and the
 sender's next DM reaches the agent; in an allowed group only the @mention reaches the agent.
-Finally `channels logout` signs the device out, and no hkcli sync may be left running.
-Without a model the agent turn itself fails, so dispatch is read from the Gateway's diagnostics.
+The Gateway is then killed hard: the next run must stop the hkcli sync it left behind. A DM that
+hkcli stores while the Gateway is down must reach the agent after a restart, and no earlier DM may
+be answered twice. Finally `channels logout` signs the device out, and no hkcli sync may be left
+running. Without a model the agent turn itself fails, so dispatch is read from the Gateway's
+diagnostics.
 
 Usage: python tests/openclaw_channel_e2e.py --hkcli PATH --plugin PATH.tgz
-Needs `openclaw` on PATH, hkcli 0.3.0+ built from this repo, and requirements-dev.txt.
+Needs Linux, `openclaw` on PATH, hkcli 0.3.0+ built from this repo, and requirements-dev.txt.
 """
 
 from __future__ import annotations
@@ -88,13 +91,37 @@ def group_message(sender: str, text: str, mention_me: bool) -> dict:
 
 def dispatched(log_file: Path, chat: str) -> bool:
     """The Gateway logs one `message processed` diagnostic per message handed to the agent."""
+    return bool(processed(log_file, chat))
+
+
+def processed(log_file: Path, chat: str) -> list[str]:
+    """Message ids of the `message processed` diagnostics for `chat`."""
     text = log_file.read_text(errors="replace") if log_file.exists() else ""
-    return re.search(rf"message processed: channel=hike chatId=\S*{re.escape(chat)}\b", text) is not None
+    return re.findall(rf"message processed: channel=hike chatId=\S*{re.escape(chat)}\b messageId=(\S+)", text)
 
 
 def relay_subscribed(fake: FakeHike) -> bool:
     with fake.lock:
         return any(f"u:{USER}" in s["topics"] for s in fake.sessions)
+
+
+def relay_sessions(fake: FakeHike) -> list[dict]:
+    with fake.lock:
+        return list(fake.sessions)
+
+
+def new_relay_session(fake: FakeHike, known: list[dict]) -> bool:
+    """A relay session subscribed since `known` was taken (it holds the old ones, so ids stay unique)."""
+    with fake.lock:
+        return any(f"u:{USER}" in s["topics"] and all(s is not old for old in known) for s in fake.sessions)
+
+
+def is_running(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False
 
 
 def hkcli_sync_processes(hkcli: str) -> list[tuple[int, str]]:
@@ -105,6 +132,42 @@ def hkcli_sync_processes(hkcli: str) -> list[tuple[int, str]]:
         if cmd.startswith(hkcli) and " sync" in cmd:
             found.append((int(pid), cmd))
     return found
+
+
+def start_gateway(openclaw: str, port: int, env: dict, log_file: Path) -> subprocess.Popen:
+    with log_file.open("w") as out:
+        return subprocess.Popen(
+            [openclaw, "gateway", "run", "--port", str(port), "--bind", "loopback", "--verbose"],
+            env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+
+
+def stop_gateway(gateway: subprocess.Popen) -> None:
+    gateway.send_signal(signal.SIGTERM)
+    try:
+        gateway.wait(timeout=90)
+    except subprocess.TimeoutExpired:
+        os.killpg(gateway.pid, signal.SIGKILL)
+        raise SystemExit("gateway did not stop within 90s of SIGTERM")
+
+
+def crash_gateway(gateway: subprocess.Popen, hkcli: str) -> int:
+    """SIGKILL every Gateway process except its hkcli sync, like an OOM kill. Returns the sync's pid."""
+    syncs = hkcli_sync_processes(hkcli)
+    if len(syncs) != 1:
+        raise SystemExit(f"expected one hkcli sync, found {syncs}")
+    orphan = syncs[0][0]
+    group = [int(pid) for pid in subprocess.run(["pgrep", "-g", str(gateway.pid)], capture_output=True, text=True).stdout.split()]
+    if orphan not in group:
+        raise SystemExit("hkcli sync does not belong to the Gateway's process group")
+    for pid in group:
+        if pid != orphan:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    gateway.wait(timeout=30)
+    return orphan
 
 
 def gateway_call(openclaw: str, method: str, params: dict, env: dict):
@@ -143,7 +206,8 @@ def main() -> int:
     env.pop("HKCLI_READONLY", None)
     port = free_port()
     gateway = None
-    gateway_log = work / "gateway.log"
+    standalone = None
+    gateway_logs: list[Path] = []
     failure = None
     try:
         run([hkcli, "--version"], env)
@@ -162,11 +226,9 @@ def main() -> int:
         log(f"linked; store {session.parent}")
 
         connects_before = len(fake.mqtt_connects)
-        with gateway_log.open("w") as out:
-            gateway = subprocess.Popen(
-                [openclaw, "gateway", "run", "--port", str(port), "--bind", "loopback", "--verbose"],
-                env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
-            )
+        gateway_log = work / "gateway.log"
+        gateway_logs.append(gateway_log)
+        gateway = start_gateway(openclaw, port, env, gateway_log)
         wait_for(lambda: gateway.poll() is not None or (len(fake.mqtt_connects) > connects_before and relay_subscribed(fake)),
                  180, "the Gateway's hkcli sync to connect to the fake relay")
         if gateway.poll() is not None:
@@ -213,6 +275,62 @@ def main() -> int:
         wait_for(lambda: dispatched(gateway_log, GROUP), 60, "the @mention in the group to reach the agent")
         log("group: unmentioned message dropped, @mention dispatched")
 
+        # A Gateway that dies hard leaves its hkcli sync holding the store; the next run stops it.
+        time.sleep(3)
+        orphan = crash_gateway(gateway, hkcli)
+        time.sleep(2)
+        if not is_running(orphan):
+            raise SystemExit("hkcli sync did not outlive the killed Gateway")
+        log(f"gateway killed; its hkcli sync (pid {orphan}) is still running")
+        known = relay_sessions(fake)
+        gateway_log = work / "gateway-2.log"
+        gateway_logs.append(gateway_log)
+        gateway = start_gateway(openclaw, port, env, gateway_log)
+        reclaimed = rf"stopped leftover hkcli sync \(pid {orphan}\)"
+        wait_for(lambda: gateway.poll() is not None or re.search(reclaimed, gateway_log.read_text(errors="replace")),
+                 120, "the restarted Gateway to stop the leftover hkcli sync")
+        if gateway.poll() is not None:
+            raise SystemExit(f"gateway exited early with code {gateway.returncode}")
+        wait_for(lambda: not is_running(orphan), 30, "the leftover hkcli sync to exit")
+        wait_for(lambda: new_relay_session(fake, known), 120, "the restarted Gateway's hkcli sync to connect")
+        log("the restarted Gateway stopped the leftover hkcli sync and reconnected")
+        time.sleep(5)
+
+        # A DM that hkcli stores while the channel is down is answered after a restart, even though
+        # hkcli's next catch-up then has nothing new to fetch.
+        stop_gateway(gateway)
+        wait_for(lambda: not hkcli_sync_processes(hkcli), 30, "hkcli sync to stop with the Gateway")
+        if processed(gateway_log, NEW_PEER):
+            raise SystemExit(f"DMs answered before the crash reached the agent again: {processed(gateway_log, NEW_PEER)}")
+        known = relay_sessions(fake)
+        standalone = subprocess.Popen(
+            [hkcli, "--store", str(session.parent), "--json", "sync", "--idle-exit", "8"],
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        wait_for(lambda: standalone.poll() is not None or new_relay_session(fake, known), 60, "a standalone hkcli sync to connect")
+        time.sleep(2)
+        while_down = dm(NEW_PEER, "are you there?")
+        fake.push(while_down)
+        out, err = standalone.communicate(timeout=60)
+        events = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+        if not any(event.get("event") == "message" and event.get("id") == while_down["s"] for event in events):
+            raise SystemExit(f"the standalone hkcli sync did not store the DM:\n{out}\n{err}")
+        log("hkcli stored a DM while the Gateway was down")
+
+        pairing_replies = sum("Pairing code" in t for t in sent_to(fake, NEW_PEER))
+        gateway_log = work / "gateway-3.log"
+        gateway_logs.append(gateway_log)
+        gateway = start_gateway(openclaw, port, env, gateway_log)
+        wait_for(lambda: gateway.poll() is not None or processed(gateway_log, NEW_PEER), 120,
+                 "the DM stored while the Gateway was down to reach the agent")
+        time.sleep(5)
+        after_restart = processed(gateway_log, NEW_PEER)
+        if after_restart != [while_down["s"]]:
+            raise SystemExit(f"after the restart expected only {while_down['s']} to reach the agent, got {after_restart}")
+        if sum("Pairing code" in t for t in sent_to(fake, NEW_PEER)) != pairing_replies:
+            raise SystemExit("an old DM got a pairing reply again after the restart")
+        log("after the restart only the DM stored while the Gateway was down reached the agent")
+
         status = run([openclaw, "channels", "status", "--channel", "hike", "--probe", "--json"], env, timeout=120, check=False)
         if '"linked": true' not in status.stdout.replace('"linked":true', '"linked": true'):
             log("warning: channels status did not report the account as linked")
@@ -227,13 +345,13 @@ def main() -> int:
     except BaseException as error:  # noqa: BLE001 - report every failure after cleanup
         failure = error
     finally:
+        if standalone is not None and standalone.poll() is None:
+            standalone.kill()
         if gateway is not None and gateway.poll() is None:
-            gateway.send_signal(signal.SIGTERM)
             try:
-                gateway.wait(timeout=90)
-            except subprocess.TimeoutExpired:
-                os.killpg(gateway.pid, signal.SIGKILL)
-                failure = failure or SystemExit("gateway did not stop within 90s of SIGTERM")
+                stop_gateway(gateway)
+            except SystemExit as error:
+                failure = failure or error
         if gateway is not None:
             time.sleep(1)
             leftovers = hkcli_sync_processes(hkcli)
@@ -249,9 +367,12 @@ def main() -> int:
             else:
                 log("no hkcli sync left running after the Gateway stopped")
             log(f"gateway exit code: {gateway.returncode}")
-            lines = gateway_log.read_text(errors="replace").splitlines() if gateway_log.exists() else []
+        for index, path in enumerate(gateway_logs):
+            last = index == len(gateway_logs) - 1
+            lines = path.read_text(errors="replace").splitlines() if path.exists() else []
             lines = [line for line in lines if "startup phase:" not in line]
-            print("----- gateway log (tail) -----\n" + "\n".join(lines[-(600 if failure else 150):]), flush=True)
+            keep = (600 if last else 300) if failure else (150 if last else 60)
+            print(f"----- {path.name} (tail) -----\n" + "\n".join(lines[-keep:]), flush=True)
         fake.stop()
     if failure is not None:
         log(f"FAILED: {failure}")
