@@ -72,6 +72,24 @@ export function liveChildCount(): number {
   return [...liveChildren].filter((child) => !hasExited(child)).length;
 }
 
+/**
+ * Stops a child: SIGINT first (hkcli treats it as Ctrl+C; Windows has no signals and kills at
+ * once), then SIGKILL if it is still running after `graceMs`.
+ */
+export function stopChild(child: ChildProcess, graceMs = 5_000): ReturnType<typeof setTimeout> | undefined {
+  if (hasExited(child)) {
+    return undefined;
+  }
+  killQuietly(child, process.platform === "win32" ? "SIGKILL" : "SIGINT");
+  const escalate = setTimeout(() => {
+    if (!hasExited(child)) {
+      killQuietly(child, "SIGKILL");
+    }
+  }, graceMs);
+  child.once("close", () => clearTimeout(escalate));
+  return escalate;
+}
+
 export function backoffDelay(policy: BackoffPolicy, attempt: number, random = Math.random): number {
   const base = Math.min(policy.maxMs, policy.initialMs * policy.factor ** Math.max(0, attempt - 1));
   const spread = base * policy.jitter;
@@ -123,16 +141,7 @@ function runChild(child: ChildProcess, options: SupervisorOptions): Promise<Supe
       resolve({ code, signal, runMs: Date.now() - startedAt, spawnError, stderrTail });
     };
     const onAbort = () => {
-      if (hasExited(child)) {
-        return;
-      }
-      // hkcli treats SIGINT (Ctrl+C) as a clean stop; Windows has no signals and kills at once.
-      killQuietly(child, process.platform === "win32" ? "SIGKILL" : "SIGINT");
-      escalate = setTimeout(() => {
-        if (!hasExited(child)) {
-          killQuietly(child, "SIGKILL");
-        }
-      }, graceMs);
+      escalate = stopChild(child, graceMs);
     };
 
     child.stdout?.on("data", (chunk: Buffer) => decoder.push(chunk));

@@ -19,6 +19,7 @@ function memoryStore(initial?: unknown) {
 }
 
 const GRACE = 5 * 60_000;
+const MINUTE = 60_000;
 const HOUR = 60 * 60_000;
 const NOW = 1_800_000_000_000;
 
@@ -151,6 +152,7 @@ describe("InboundGate", () => {
   it("raises the read-back floor when too many handled ids must be kept", async () => {
     const { store, saves } = memoryStore({ v: 2, cursor: NOW, seen: [] });
     const gate = await InboundGate.open({ store, now: () => NOW, graceMs: GRACE, maxSeen: 3 });
+    const running = gate.beginRecovery();
     for (let i = 1; i <= 5; i += 1) {
       gate.check(dm(`m${i}`, NOW - 100 + i));
       await gate.commit(`m${i}`);
@@ -161,12 +163,67 @@ describe("InboundGate", () => {
       ["m3", "m4", "m5"],
     );
     assert.equal(saved?.floor, NOW - 100 + 3);
+    // A read-back that started before the cap dropped "m2" must not offer it again either.
+    assert.equal(gate.check(dm("m2", NOW - 100 + 2), running), "stale");
+    gate.endRecovery(running);
     const since = gate.beginRecovery();
     assert.equal(since, NOW - 100 + 3);
     assert.equal(gate.check(dm("m2", NOW - 100 + 2), since), "stale");
 
     const reopened = await InboundGate.open({ store: memoryStore(saved).store, now: () => NOW, graceMs: GRACE });
     assert.equal(reopened.beginRecovery(), NOW - 100 + 3);
+  });
+
+  it("never raises the read-back floor above the cursor", async () => {
+    const cursor = NOW - MINUTE;
+    const { store, saves } = memoryStore({ v: 2, cursor, seen: [] });
+    const gate = await InboundGate.open({ store, now: () => NOW, graceMs: GRACE, maxSeen: 2 });
+    for (const [id, ts] of [["a", NOW - 30_000], ["b", NOW - 20_000], ["c", NOW - 10_000]] as const) {
+      gate.check(dm(id, ts));
+      await gate.commit(id);
+    }
+    assert.equal(saves.at(-1)?.floor, cursor);
+    assert.equal(gate.beginRecovery(), cursor);
+
+    // State saved by a version that let the floor run ahead is pulled back to the cursor.
+    const ahead = await InboundGate.open({
+      store: memoryStore({ v: 2, cursor: NOW, floor: Date.UTC(2099, 0, 1), seen: [] }).store,
+      now: () => NOW,
+      graceMs: GRACE,
+    });
+    assert.equal(ahead.beginRecovery(), NOW);
+  });
+
+  it("answers future-dated messages live, but they cannot switch off recovery", async () => {
+    const y2099 = Date.UTC(2099, 0, 1);
+    const { store, saves } = memoryStore({ v: 2, cursor: NOW, seen: [] });
+    const gate = await InboundGate.open({ store, now: () => NOW, graceMs: GRACE });
+    for (let i = 0; i <= 800; i += 1) {
+      assert.equal(gate.check(dm(`spam${i}`, y2099)), "accept");
+      await gate.commit(`spam${i}`);
+    }
+    assert.equal(saves.at(-1)?.floor, undefined);
+    assert.deepEqual(saves.at(-1)?.seen, []);
+    const since = gate.beginRecovery();
+    assert.equal(since, NOW - GRACE);
+    assert.equal(gate.check(dm("spam0", y2099), since), "future");
+    assert.equal(gate.check(dm("while-down", NOW - 2_000), since), "accept");
+
+    // Ids dated a little ahead are kept (time may catch up with them), but are dropped first.
+    const near = memoryStore({ v: 2, cursor: NOW, seen: [] });
+    const ahead = await InboundGate.open({ store: near.store, now: () => NOW, graceMs: GRACE, maxSeen: 3 });
+    for (let i = 0; i < 4; i += 1) {
+      ahead.check(dm(`ahead${i}`, NOW + HOUR + i));
+      await ahead.commit(`ahead${i}`);
+    }
+    ahead.check(dm("real", NOW - 1_000));
+    await ahead.commit("real");
+    assert.deepEqual(
+      near.saves.at(-1)?.seen.map(([id]) => id),
+      ["real", "ahead0", "ahead1"],
+    );
+    assert.equal(near.saves.at(-1)?.floor, undefined);
+    assert.equal(ahead.check(dm("ahead9", NOW + HOUR), ahead.beginRecovery()), "future");
   });
 
   it("reads version 1 state", async () => {

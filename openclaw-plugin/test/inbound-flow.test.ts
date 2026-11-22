@@ -7,6 +7,7 @@ import { InboundGate, type InboundCursorState } from "../src/inbound-gate.ts";
 
 const GRACE = 5 * 60_000;
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const NOW = 1_800_000_000_000;
 
 function message(id: string, ts: number, chatType: "direct" | "group" = "direct"): HikeInboundMessage {
@@ -25,8 +26,17 @@ function message(id: string, ts: number, chatType: "direct" | "group" = "direct"
   };
 }
 
-/** What outlives one account run: the clock, the plugin's saved cursor and hkcli's message store. */
-type World = { now: number; state?: InboundCursorState; stored: HikeInboundMessage[] };
+/**
+ * What outlives one account run: the wall and monotonic clocks, the plugin's saved cursor and
+ * hkcli's message store.
+ */
+type World = { now: number; mono: number; state?: InboundCursorState; stored: HikeInboundMessage[] };
+
+/** Time passing while the host is awake: both clocks move. */
+function elapse(world: World, ms: number): void {
+  world.now += ms;
+  world.mono += ms;
+}
 
 type RunOptions = {
   readBack?: (since: number, signal: AbortSignal) => Promise<CatchUpResult>;
@@ -51,6 +61,7 @@ async function startRun(world: World, options: RunOptions = {}) {
   const handled: string[] = [];
   const reads: number[] = [];
   const warnings: string[] = [];
+  const restarts: number[] = [];
   const chains = new Map<string, Promise<void>>();
   const flow = new InboundFlow({
     gate,
@@ -78,9 +89,11 @@ async function startRun(world: World, options: RunOptions = {}) {
         await commit();
         handled.push(inbound.id);
       }),
+    restartSync: () => restarts.push(world.now),
     signal: abort.signal,
-    log: { warn: (line) => warnings.push(line) },
+    log: { info: () => {}, warn: (line) => warnings.push(line) },
     now: clock,
+    monotonicNow: () => world.mono,
   });
   const settle = async () => {
     for (let turn = 0; turn < 5; turn += 1) {
@@ -93,12 +106,12 @@ async function startRun(world: World, options: RunOptions = {}) {
     await settle();
     await flow.stop();
   };
-  return { gate, flow, handled, reads, warnings, settle, stop };
+  return { gate, flow, handled, reads, warnings, restarts, settle, stop };
 }
 
 describe("InboundFlow", () => {
   it("never answers an old direct message again after a reconnect, whatever came in between", async () => {
-    const world: World = { now: NOW, stored: [] };
+    const world: World = { now: NOW, mono: 0, stored: [] };
     const run = await startRun(world);
     run.flow.childStarted();
     run.flow.synced(0);
@@ -106,13 +119,13 @@ describe("InboundFlow", () => {
 
     const monday = message("monday", world.now + 1_000);
     world.stored.push(monday);
-    world.now += 2_000;
+    elapse(world, 2_000);
     run.flow.received(monday);
     await run.settle();
 
     // Two days of busy group chat; the cursor moves every minute.
     for (let minute = 0; minute < 2 * 24 * 60; minute += 1) {
-      world.now += MINUTE;
+      elapse(world, MINUTE);
       run.flow.received(message(`g${minute}`, world.now, "group"));
       await run.settle();
       run.flow.tick();
@@ -122,7 +135,7 @@ describe("InboundFlow", () => {
     run.flow.connectionLost();
     const missed = message("missed", world.now - 30_000);
     world.stored.push(missed);
-    world.now += 10_000;
+    elapse(world, 10_000);
     run.flow.synced(1);
     await run.settle();
 
@@ -135,7 +148,7 @@ describe("InboundFlow", () => {
   });
 
   it("answers a stored message the last run never got to, even when hkcli fetched nothing", async () => {
-    const world: World = { now: NOW, stored: [] };
+    const world: World = { now: NOW, mono: 0, stored: [] };
     let finishA: () => void = () => {};
     const aInFlight = new Promise<void>((resolve) => {
       finishA = resolve;
@@ -156,11 +169,11 @@ describe("InboundFlow", () => {
     const a = message("a", world.now + 1_000);
     const b = message("b", world.now + 2_000);
     world.stored.push(a, b);
-    world.now += 3_000;
+    elapse(world, 3_000);
     first.flow.received(a);
     first.flow.received(b);
     await new Promise((resolve) => setImmediate(resolve));
-    world.now += 10 * MINUTE;
+    elapse(world, MINUTE);
     first.flow.tick();
 
     // Restart while the agent still answers "a"; "b" waits behind it in the chat's queue.
@@ -179,7 +192,7 @@ describe("InboundFlow", () => {
   });
 
   it("keeps the cursor when the account stops during a read-back", async () => {
-    const world: World = { now: NOW, stored: [] };
+    const world: World = { now: NOW, mono: 0, stored: [] };
     const run = await startRun(world, {
       readBack: async (_since, signal) =>
         await new Promise<CatchUpResult>((_resolve, reject) => {
@@ -188,7 +201,7 @@ describe("InboundFlow", () => {
     });
     run.flow.childStarted();
     run.flow.synced(4);
-    world.now += 30 * MINUTE;
+    elapse(world, MINUTE);
     run.flow.tick();
     await run.stop();
     assert.equal(world.state?.cursor, NOW);
@@ -196,7 +209,7 @@ describe("InboundFlow", () => {
   });
 
   it("retries a failed read-back and holds the cursor until one succeeds", async () => {
-    const world: World = { now: NOW, stored: [] };
+    const world: World = { now: NOW, mono: 0, stored: [] };
     let failing = true;
     const reads: number[] = [];
     const run = await startRun(world, {
@@ -212,7 +225,7 @@ describe("InboundFlow", () => {
     run.flow.synced(0);
     await run.settle();
     world.stored.push(message("late", NOW + 1_000));
-    world.now += MINUTE;
+    elapse(world, MINUTE);
     run.flow.tick();
     await run.settle();
     assert.equal(reads.length, 2);
@@ -220,7 +233,7 @@ describe("InboundFlow", () => {
     assert.equal(run.warnings.length, 2);
 
     failing = false;
-    world.now += MINUTE;
+    elapse(world, MINUTE);
     run.flow.tick();
     await run.settle();
     assert.equal(reads.length, 3);
@@ -230,7 +243,7 @@ describe("InboundFlow", () => {
   });
 
   it("reads the store back for every new hkcli process and every catch-up that fetched messages", async () => {
-    const world: World = { now: NOW, stored: [] };
+    const world: World = { now: NOW, mono: 0, stored: [] };
     let release: (result: CatchUpResult) => void = () => {};
     const reads: number[] = [];
     const run = await startRun(world, {
@@ -258,20 +271,88 @@ describe("InboundFlow", () => {
     assert.equal(reads.length, 2);
     // Another catch-up lands while that read-back still runs: it gets its own afterwards.
     run.flow.connectionLost();
-    world.now += MINUTE;
+    elapse(world, MINUTE);
     run.flow.synced(1);
     await run.settle();
     assert.equal(reads.length, 2);
     release({ messages: [], truncated: true });
     await run.settle();
     assert.equal(reads.length, 3);
-    assert.equal(run.gate.cursorValue, world.now);
     assert.equal(run.warnings.length, 1);
+    run.flow.tick();
+    assert.equal(run.gate.cursorValue, world.now);
 
     run.flow.connectionLost();
     run.flow.childStarted();
     run.flow.synced(0);
     await run.settle();
     assert.equal(reads.length, 4);
+  });
+
+  it("still answers direct messages that arrived while the host slept", async () => {
+    // Linux and macOS stop the monotonic clock during suspend; other hosts may keep it running.
+    for (const monotonicCountsSleep of [false, true]) {
+      const evening = Date.UTC(2026, 10, 22, 23, 0);
+      const world: World = { now: evening, mono: 0, stored: [] };
+      const run = await startRun(world);
+      run.flow.childStarted();
+      run.flow.synced(0);
+      await run.settle();
+      elapse(world, MINUTE);
+      run.flow.tick();
+      const beforeSleep = run.gate.cursorValue;
+      assert.equal(beforeSleep, evening + MINUTE);
+
+      // Eight hours asleep: no ticks, and hkcli's connection dies without it noticing yet.
+      world.now += 8 * HOUR;
+      if (monotonicCountsSleep) {
+        world.mono += 8 * HOUR;
+      }
+      const night = [message("01:01", beforeSleep + 2 * HOUR), message("05:01", beforeSleep + 6 * HOUR)];
+
+      // The first tick after waking comes before hkcli reports the dead connection.
+      elapse(world, 30_000);
+      run.flow.tick();
+      assert.equal(run.restarts.length, 1);
+      assert.equal(run.gate.cursorValue, beforeSleep);
+
+      // The restarted hkcli catches up, storing the night's messages, and the store is read back.
+      run.flow.connectionLost();
+      run.flow.childStarted();
+      world.stored.push(...night);
+      run.flow.synced(night.length);
+      await run.settle();
+      assert.deepEqual(run.handled, ["01:01", "05:01"]);
+      assert.equal(run.reads.at(-1), beforeSleep - GRACE);
+      elapse(world, MINUTE);
+      run.flow.tick();
+      assert.equal(run.restarts.length, 1);
+      assert.equal(run.gate.cursorValue, world.now);
+      await run.stop();
+    }
+  });
+
+  it("moves the cursor only up to a tick seen while connected, and never when stopping", async () => {
+    const world: World = { now: NOW, mono: 0, stored: [] };
+    const run = await startRun(world);
+    run.flow.childStarted();
+    run.flow.synced(0);
+    await run.settle();
+    assert.equal(run.gate.cursorValue, NOW);
+    elapse(world, MINUTE);
+    run.flow.tick();
+    const confirmed = world.now;
+    assert.equal(run.gate.cursorValue, confirmed);
+
+    // The host sleeps; right after waking hkcli reconnects with nothing new, then the Gateway
+    // stops, all before the next tick.
+    world.now += 8 * HOUR;
+    elapse(world, 10_000);
+    run.flow.connectionLost();
+    run.flow.synced(0);
+    await run.settle();
+    assert.equal(run.gate.cursorValue, confirmed);
+    await run.stop();
+    assert.equal(world.state?.cursor, confirmed);
   });
 });

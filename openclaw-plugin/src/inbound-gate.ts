@@ -5,7 +5,7 @@ export type InboundCursorState = {
   v: 2;
   /** Time (epoch ms) up to which every inbound message was handled or deliberately skipped. */
   cursor: number;
-  /** Read-backs never go below this; raised only when `seen` overflowed. */
+  /** Read-backs never go below this; raised only when `seen` overflowed, and never past `cursor`. */
   floor?: number;
   /** Handled direct messages ([id, ts]) newer than the oldest bound a read-back may still use. */
   seen: Array<[string, number]>;
@@ -16,7 +16,7 @@ export type InboundCursorStore = {
   save(state: InboundCursorState): Promise<void>;
 };
 
-export type InboundGateDecision = "accept" | "self" | "duplicate" | "stale";
+export type InboundGateDecision = "accept" | "self" | "duplicate" | "stale" | "future";
 
 export type GateMessage = { id: string; fromMe: boolean; ts: number; chatType: "direct" | "group" };
 
@@ -106,7 +106,7 @@ export class InboundGate {
     const openedAt = this.now();
     this.cursor = state ? Math.min(state.cursor, openedAt) : openedAt;
     this.liveFloor = this.cursor - this.graceMs;
-    this.recoveryFloor = state?.floor ?? 0;
+    this.recoveryFloor = Math.min(state?.floor ?? 0, this.cursor);
     this.seen = state?.seen ?? new Map();
     this.dirty = !state;
   }
@@ -129,15 +129,25 @@ export class InboundGate {
     return this.cursor;
   }
 
-  /** Live events use the run's floor; read-backs pass the bound they read from. */
-  check(message: GateMessage, bound: number = this.liveFloor): InboundGateDecision {
+  /**
+   * Live events (no `bound`) use the run's floor. Read-backs pass the bound they read from, and the
+   * floor the cap may have raised since applies too. Read-backs also skip messages dated more than
+   * the grace period ahead: the sender sets that date, so it cannot be placed against the cursor.
+   * Live, such a message is still answered once.
+   */
+  check(message: GateMessage, bound?: number): InboundGateDecision {
     if (message.fromMe) {
       return "self";
     }
     if (this.seen.has(message.id) || this.pending.has(message.id) || this.recentGroupIds.has(message.id)) {
       return "duplicate";
     }
-    if (message.ts < bound || message.ts < this.now() - this.maxAgeMs) {
+    const now = this.now();
+    if (bound !== undefined && message.ts > now + this.graceMs) {
+      return "future";
+    }
+    const lower = bound === undefined ? this.liveFloor : Math.max(bound, this.recoveryFloor);
+    if (message.ts < lower || message.ts < now - this.maxAgeMs) {
       return "stale";
     }
     const direct = message.chatType === "direct";
@@ -244,27 +254,34 @@ export class InboundGate {
 
   /**
    * Forgets ids no read-back can offer again: older than every bound in use (cursor - grace,
-   * running read-backs) or than the age limit. Count only matters past `maxSeen`, and then the
-   * read-back floor moves up instead of letting an old id be answered again.
+   * running read-backs) or than the age limit, or dated more than the age limit ahead. Past
+   * `maxSeen`, ids dated in the future go first (read-backs skip those anyway), then the oldest,
+   * and read-backs start above the dropped ones, though never above the cursor.
    */
   private prune(): void {
-    const keepFrom = Math.max(
-      Math.min(this.cursor - this.graceMs, ...this.activeBounds),
-      this.now() - this.maxAgeMs,
-    );
+    const now = this.now();
+    const keepFrom = Math.max(Math.min(this.cursor - this.graceMs, ...this.activeBounds), now - this.maxAgeMs);
     for (const [id, ts] of this.seen) {
-      if (ts < keepFrom) {
+      if (ts < keepFrom || ts > now + this.maxAgeMs) {
         this.seen.delete(id);
       }
     }
-    if (this.seen.size <= this.maxSeen) {
+    const excess = this.seen.size - this.maxSeen;
+    if (excess <= 0) {
       return;
     }
-    const oldestFirst = [...this.seen].sort((a, b) => a[1] - b[1]);
-    const dropped = oldestFirst.slice(0, oldestFirst.length - this.maxSeen);
+    const future = now + this.graceMs;
+    // Future-dated ids first, latest first; then the oldest.
+    const dropped = [...this.seen]
+      .sort(([, a], [, b]) => (a > future || b > future ? b - a : a - b))
+      .slice(0, excess);
     for (const [id] of dropped) {
       this.seen.delete(id);
     }
-    this.recoveryFloor = Math.max(this.recoveryFloor, (dropped.at(-1)?.[1] ?? 0) + 1);
+    const past = dropped.filter(([, ts]) => ts <= future);
+    if (past.length > 0) {
+      const above = Math.max(...past.map(([, ts]) => ts)) + 1;
+      this.recoveryFloor = Math.max(this.recoveryFloor, Math.min(above, this.cursor));
+    }
   }
 }

@@ -4,6 +4,9 @@ import type { CatchUpResult } from "./catch-up.ts";
 import type { HikeInboundMessage } from "./events.ts";
 import type { InboundGate } from "./inbound-gate.ts";
 
+/** How often the gateway calls `tick()`. */
+export const INBOUND_TICK_MS = 60_000;
+
 /** Records the message as handled; call right before its first side effect. */
 export type InboundCommit = () => Promise<boolean>;
 
@@ -16,25 +19,40 @@ export type InboundFlowOptions = {
   /** Runs `task` after earlier tasks with the same key finished (one chat at a time). */
   schedule: (key: string, task: () => Promise<void>) => void;
   handle: InboundHandler;
+  /** Stops the running `hkcli sync` so that a fresh one starts. */
+  restartSync: () => void;
   signal: AbortSignal;
-  log: { warn: (message: string) => void; debug?: (message: string) => void };
+  log: { info: (message: string) => void; warn: (message: string) => void; debug?: (message: string) => void };
   now?: () => number;
+  /** Milliseconds from a monotonic clock (default `performance.now()`). */
+  monotonicNow?: () => number;
+  tickIntervalMs?: number;
 };
 
 export class InboundFlow {
   private readonly options: InboundFlowOptions;
   private readonly now: () => number;
+  private readonly monotonicNow: () => number;
+  private readonly tickIntervalMs: number;
   /** hkcli finished its catch-up and is receiving live events. */
   private live = false;
-  private freshChild = false;
+  /** The next sync event reads the store back: a new hkcli process, or a gap in the clock. */
+  private readBackOnSync = false;
   /** Read-backs asked for and the latest one that fully finished; the cursor waits for both. */
   private requested = 0;
   private completed = 0;
   private recovery: Promise<void> | undefined;
+  private lastTick: { wall: number; mono: number };
+  /** The latest tick time seen while connected; the cursor never moves past it. */
+  private confirmedAt: number;
 
   constructor(options: InboundFlowOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now());
+    this.tickIntervalMs = options.tickIntervalMs ?? INBOUND_TICK_MS;
+    this.lastTick = { wall: this.now(), mono: this.monotonicNow() };
+    this.confirmedAt = options.gate.cursorValue;
   }
 
   get caughtUp(): boolean {
@@ -43,7 +61,7 @@ export class InboundFlow {
 
   /** A new `hkcli sync` process started; its first sync event triggers a read-back. */
   childStarted(): void {
-    this.freshChild = true;
+    this.readBackOnSync = true;
     this.live = false;
   }
 
@@ -59,8 +77,8 @@ export class InboundFlow {
    */
   synced(fetched: number): void {
     this.live = true;
-    if (this.freshChild || fetched > 0) {
-      this.freshChild = false;
+    if (this.readBackOnSync || fetched > 0) {
+      this.readBackOnSync = false;
       this.requested += 1;
     }
     this.step();
@@ -70,17 +88,36 @@ export class InboundFlow {
     this.admit(message);
   }
 
-  /** Periodic: moves the cursor while live and caught up, or retries a failed read-back. */
+  /**
+   * Called every `tickIntervalMs`: moves the cursor while live and caught up, or retries a failed
+   * read-back. A tick that comes far too late by either clock means the host slept (or the process
+   * stalled), and hkcli may not have noticed yet that its connection died meanwhile: then the
+   * cursor stays put and a fresh hkcli catches up and reads the store back from it.
+   */
   tick(): void {
+    if (this.options.signal.aborted) {
+      return;
+    }
+    const wall = this.now();
+    const mono = this.monotonicNow();
+    const late = Math.max(wall - this.lastTick.wall, mono - this.lastTick.mono) > 2 * this.tickIntervalMs;
+    this.lastTick = { wall, mono };
+    if (late) {
+      this.live = false;
+      this.readBackOnSync = true;
+      this.options.log.info("hike: the clock jumped (did the host sleep?); restarting hkcli sync to catch up");
+      this.options.restartSync();
+      return;
+    }
+    if (this.live) {
+      this.confirmedAt = Math.max(this.confirmedAt, wall);
+    }
     this.step();
   }
 
-  /** After the abort: waits for a read-back in flight and saves the cursor if it may move. */
+  /** After the abort: waits for a read-back in flight and saves what was already recorded. */
   async stop(): Promise<void> {
     await this.recovery;
-    if (this.live && this.caughtUp) {
-      this.options.gate.advance(this.now());
-    }
     await this.options.gate.flush();
   }
 
@@ -92,7 +129,11 @@ export class InboundFlow {
       this.startRecovery();
       return;
     }
-    this.options.gate.advance(this.now());
+    this.advance(this.now());
+  }
+
+  private advance(time: number): void {
+    this.options.gate.advance(Math.min(time, this.confirmedAt));
   }
 
   private startRecovery(): void {
@@ -109,7 +150,7 @@ export class InboundFlow {
       this.completed = generation;
       if (this.completed === this.requested) {
         // Everything stored before the read-back started was offered to the gate.
-        gate.advance(startedAt);
+        this.advance(startedAt);
       }
       this.step();
     });
@@ -143,6 +184,8 @@ export class InboundFlow {
     if (decision !== "accept") {
       if (decision === "stale") {
         log.debug?.(`hike: skipped message ${message.id} from before the inbound cursor`);
+      } else if (decision === "future") {
+        log.debug?.(`hike: skipped message ${message.id} dated in the future`);
       }
       return;
     }

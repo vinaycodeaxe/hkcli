@@ -10,17 +10,16 @@ import { loginCommand, logoutHikeAccount } from "./auth.ts";
 import { collectMissedDirectMessages, createHkcliCatchUpSource } from "./catch-up.ts";
 import { parseSyncEvent } from "./events.ts";
 import { HKCLI_INSTALL_HINT, hkcliArgs, probeHkcliVersion, spawnHkcli } from "./hkcli.ts";
-import { InboundFlow } from "./inbound-flow.ts";
+import { INBOUND_TICK_MS, InboundFlow } from "./inbound-flow.ts";
 import { InboundGate, type InboundCursorState, type InboundCursorStore } from "./inbound-gate.ts";
 import { createHikeInboundHandler, type HikeLog } from "./inbound.ts";
 import { getHikeRuntime } from "./runtime.ts";
-import { superviseProcess, type SupervisedExit } from "./supervisor.ts";
+import { stopChild, superviseProcess, type SupervisedExit } from "./supervisor.ts";
 import { SyncProcessTracker, type SyncProcessRecord } from "./sync-process.ts";
 
 type ActiveAccount = { abort: AbortController; done: Promise<void> };
 
 const activeAccounts = new Map<string, ActiveAccount>();
-const LIVE_CURSOR_INTERVAL_MS = 60_000;
 
 function createLog(ctx: ChannelGatewayContext<ResolvedHikeAccount>, core: PluginRuntime): HikeLog {
   if (ctx.log) {
@@ -103,6 +102,9 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
     abortSignal: abort.signal,
     onError: (error) => log.error(`hike: inbound message failed: ${String(error)}`),
   });
+  let child: ChildProcess | undefined;
+  let restartRequested = false;
+  let lastError: { code: string; message: string } | undefined;
   const flow = new InboundFlow({
     gate,
     readBack: async (since, signal) =>
@@ -117,10 +119,16 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
       onInbound: (at) => status({ lastInboundAt: at }),
       onOutbound: (at) => status({ lastOutboundAt: at }),
     }),
+    restartSync: () => {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        restartRequested = true;
+        stopChild(child);
+      }
+    },
     signal: abort.signal,
     log,
   });
-  const tick = setInterval(() => flow.tick(), LIVE_CURSOR_INTERVAL_MS);
+  const tick = setInterval(() => flow.tick(), INBOUND_TICK_MS);
   tick.unref?.();
 
   const stopOnAbort = () => abort.abort();
@@ -135,8 +143,6 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
   activeAccounts.get(accountId)?.abort.abort();
   activeAccounts.set(accountId, { abort, done });
 
-  let child: ChildProcess | undefined;
-  let lastError: { code: string; message: string } | undefined;
   try {
     await superviseProcess({
       signal: abort.signal,
@@ -182,6 +188,8 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
       onHandlerError: (error) => log.error(`hike: event handling failed: ${String(error)}`),
       onExit: async (exit) => {
         flow.connectionLost();
+        const restart = restartRequested;
+        restartRequested = false;
         if (exit.spawnError?.code === "ENOENT") {
           blocked(`hkcli was not found (${account.cliPath}). ${HKCLI_INSTALL_HINT}`);
           return { action: "stop" };
@@ -191,6 +199,10 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
             `Hike login no longer works (${lastError?.message ?? "auth required"}). Run: ${loginCommand(accountId)}`,
           );
           return { action: "stop" };
+        }
+        if (restart) {
+          status({ connected: false, lifecycle: "recovering" });
+          return { action: "restart", delayMs: 0 };
         }
         if (lastError?.code === "store_locked") {
           const holder = lockHolderPid(lastError.message);
