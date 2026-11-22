@@ -28,8 +28,8 @@ openclaw gateway restart
 
 `channels login` shows a QR code in the terminal. On the agent's phone open
 Hike > Settings > Web QR Login and scan it. To log in with an SMS code instead, run
-`hkcli --store "<store dir>" auth --phone +<country code><number>` (the login command prints the
-store directory), then restart the Gateway.
+`hkcli --store "<store dir>" auth --phone +<country code><number>`, then restart the Gateway. The
+store dir is printed by `channels login`; by default it is `~/.openclaw/hike/default`.
 
 Check the account: `openclaw channels status --channel hike --probe`.
 
@@ -50,7 +50,8 @@ To also send them a confirmation message, approve the request in the Control UI
 ## Groups
 
 Groups are off until you list them (`groupPolicy: "allowlist"`). The agent replies only when
-@mentioned, unless you set `requireMention: false`. Find a group's id with `hkcli chats list`.
+@mentioned, unless you set `requireMention: false`. Find a group's id with
+`hkcli --store ~/.openclaw/hike/default chats list` (group rows have type `group`).
 
 ```bash
 openclaw config set channels.hike.groups '{"<group id>": {"allowFrom": ["*"]}}' --strict-json --merge
