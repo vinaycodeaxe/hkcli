@@ -1,0 +1,63 @@
+name: plugin-verify
+
+# Installs the published channel plugin from ClawHub into a clean OpenClaw, the way a user would,
+# and checks that it loads. Run it by hand after a publish (Actions > plugin-verify).
+
+on:
+  workflow_dispatch:
+    inputs:
+      openclaw_version:
+        description: OpenClaw version to test (empty = the plugin's build version)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Install from ClawHub
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OPENCLAW_STATE_DIR: ${{ github.workspace }}/../openclaw-state
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install OpenClaw
+        env:
+          REQUESTED_VERSION: ${{ inputs.openclaw_version }}
+        run: |
+          set -euo pipefail
+          version="${REQUESTED_VERSION:-$(node -p 'require("./openclaw-plugin/package.json").openclaw.build.openclawVersion')}"
+          mkdir -p "$OPENCLAW_STATE_DIR"
+          npm install --global --no-audit --no-fund "openclaw@${version}"
+          openclaw --version
+
+      - name: Install the plugin from ClawHub
+        run: openclaw plugins install clawhub:@vinaycodeaxe/hkcli-channel --force --accept-capabilities
+
+      - name: Inspect the loaded runtime
+        run: |
+          set -euo pipefail
+          openclaw plugins inspect hike --runtime --json > "$RUNNER_TEMP/inspect.json"
+          node -e '
+            const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const { plugin } = report;
+            console.log(JSON.stringify({ version: plugin.version, source: plugin.source, status: plugin.status,
+              imported: plugin.imported, channelIds: plugin.channelIds, diagnostics: report.diagnostics }, null, 2));
+            const problems = [];
+            if (plugin.status !== "loaded") problems.push(`status ${plugin.status}`);
+            if (plugin.imported !== true) problems.push("runtime entry not imported");
+            if (!plugin.channelIds?.includes("hike")) problems.push("hike channel not registered");
+            if ((report.diagnostics ?? []).length > 0) problems.push("diagnostics reported");
+            if (problems.length > 0) throw new Error(problems.join("; "));
+          ' "$RUNNER_TEMP/inspect.json"

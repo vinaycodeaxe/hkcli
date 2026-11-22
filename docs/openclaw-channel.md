@@ -97,9 +97,9 @@ Access is always checked by Hike user id, never by display name.
 
 - Text only for now. Photos, files and stickers reach the agent as a short note such as
   `[photo: a.jpg]`, and the agent replies with text.
-- Direct messages sent while the Gateway is down are answered when it starts again; group
-  messages from that time are skipped. Chat history from before the first start is never
-  answered.
+- Direct messages sent while the Gateway is down are answered when it starts again, up to 12
+  hours back; group messages from that time are skipped. Chat history from before the first
+  start is never answered.
 - Like hkcli itself, the channel is unofficial and not affiliated with Hike. Hike could change
   its service or block unofficial clients, so use a number you can afford to lose.
 

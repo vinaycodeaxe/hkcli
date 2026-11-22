@@ -19,7 +19,8 @@ Notes for people and coding agents working on this repository.
 - `.github/workflows/`: `ci.yml` (tests, docs, release build), `pages.yml` (website),
   `release.yml` (GoReleaser release, then ClawHub), `clawhub.yml` (publishes the skill to
   ClawHub; also runs by hand), `plugin.yml` (plugin build, tests, packaged install, end-to-end,
-  ClawHub dry run), `plugin-publish.yml` (publishes the plugin to ClawHub; run by hand).
+  ClawHub dry run), `plugin-publish.yml` (publishes the plugin to ClawHub; run by hand),
+  `plugin-verify.yml` (installs the published plugin from ClawHub; run by hand).
   `.goreleaser.yaml` defines the release builds.
 
 ## Commands

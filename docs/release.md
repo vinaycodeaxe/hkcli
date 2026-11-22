@@ -16,6 +16,7 @@ This page is for maintainers. Publishing is automated with GitHub Actions in
 | `clawhub.yml` | Each release, or by hand | Publishes the OpenClaw skill in `skills/hkcli` to ClawHub |
 | `plugin.yml` | Pushes and pull requests that touch the channel plugin | Builds and tests `openclaw-plugin/`, installs the packed plugin into OpenClaw, runs the end-to-end test against the fake Hike servers, and does a ClawHub dry run |
 | `plugin-publish.yml` | By hand | Publishes the channel plugin `@vinaycodeaxe/hkcli-channel` to ClawHub |
+| `plugin-verify.yml` | By hand, after a publish | Installs the published plugin from ClawHub into a clean OpenClaw and checks that it loads |
 
 `go install github.com/vinaycodeaxe/hkcli/cmd/hkcli@latest` needs no publishing step: the Go
 module proxy picks up each new tag from GitHub.
@@ -75,6 +76,8 @@ To release it:
 2. Push to `main` and wait for `plugin.yml` to pass.
 3. Open *Actions > plugin-publish > Run workflow* on `main`, untick *Preview only* and add a
    short changelog.
+4. When ClawHub has finished its checks, run *Actions > plugin-verify* to install the published
+   plugin into a clean OpenClaw.
 
 ClawHub checks every new version before it can be installed. The plugin is MIT licensed.
 
