@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 CHANGELOG = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
-CHANGELOG_URL = "https://github.com/vinaycodeaxe/hikecli/blob/main/CHANGELOG.md"
+CHANGELOG_URL = "https://github.com/vinaycodeaxe/hkcli/blob/main/CHANGELOG.md"
 
 
 def section(version: str, text: str) -> str:

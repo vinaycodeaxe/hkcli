@@ -1,17 +1,19 @@
 ---
 title: Store
-description: "What hikecli saves on disk, how to read the database from other tools, and how to delete it."
+description: "What hkcli saves on disk, how to read the database from other tools, and how to delete it."
 ---
 
 # Store
 
-Everything hikecli saves lives in one folder per account: `~/.hikecli` by default
-(`%USERPROFILE%\.hikecli` on Windows). Change it with `--store DIR` or `HIKECLI_STORE`.
+Everything hkcli saves lives in one folder per account: `~/.hkcli` by default
+(`%USERPROFILE%\.hkcli` on Windows). Change it with `--store DIR` or `HKCLI_STORE`. If
+`~/.hkcli` does not exist but `~/.hikecli` does (a store made by hkcli's Python prototype,
+`hikecli`), hkcli uses that folder, so an existing login and history keep working.
 
 | File | What it is |
 | --- | --- |
 | `session.json` | Your login (access and refresh tokens). Treat it like a password |
-| `device.json` | The web device id hikecli uses with Hike |
+| `device.json` | The web device id hkcli uses with Hike |
 | `hike.db` | Chats, messages, contacts and the search index (SQLite; the `-wal` and `-shm` files belong to it) |
 | `media/` | Downloaded attachments |
 | `LOCK`, `refresh.lock` | Lock files that stop two processes from clashing |
@@ -35,7 +37,7 @@ On macOS and Linux, the folder and the login files are readable only by you.
 Other programs can read it, even while `sync` runs. Open it read-only:
 
 ```bash
-sqlite3 "file:$HOME/.hikecli/hike.db?mode=ro" \
+sqlite3 "file:$HOME/.hkcli/hike.db?mode=ro" \
   "select datetime(ts/1000, 'unixepoch'), text from messages order by ts desc limit 10;"
 ```
 
@@ -43,12 +45,12 @@ sqlite3 "file:$HOME/.hikecli/hike.db?mode=ro" \
 import sqlite3
 from pathlib import Path
 
-db = sqlite3.connect(f"file:{Path.home() / '.hikecli' / 'hike.db'}?mode=ro", uri=True)
+db = sqlite3.connect(f"file:{Path.home() / '.hkcli' / 'hike.db'}?mode=ro", uri=True)
 for chat_id, count in db.execute("select chat_id, count(*) from messages group by chat_id"):
     print(chat_id, count)
 ```
 
-Only write to it through hikecli. The table layout can change between versions; the
+Only write to it through hkcli. The table layout can change between versions; the
 `--json` output of the commands stays stable.
 
 ## Privacy and deleting
@@ -57,6 +59,6 @@ The store is not encrypted. Anyone who can read the folder can read your message
 anyone with `session.json` can use your account. To remove everything:
 
 ```bash
-hikecli auth logout
-rm -rf ~/.hikecli
+hkcli auth logout
+rm -rf ~/.hkcli
 ```

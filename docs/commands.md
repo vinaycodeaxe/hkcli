@@ -1,22 +1,22 @@
 ---
 title: Commands
-description: "Every hikecli command and flag, the JSON output format, exit codes and environment variables."
+description: "Every hkcli command and flag, the JSON output format, exit codes and environment variables."
 ---
 
 # Commands
 
 ## Global options
 
-These work before or after the command name, for example `hikecli --json chats list` or
-`hikecli chats list --json`:
+These work before or after the command name, for example `hkcli --json chats list` or
+`hkcli chats list --json`:
 
 | Option | Meaning |
 | --- | --- |
-| `--store DIR` | Store folder (default `~/.hikecli`, or `HIKECLI_STORE`) |
+| `--store DIR` | Store folder (default `~/.hkcli`, or `HKCLI_STORE`) |
 | `--json` | Print JSON (see below) |
 | `--read-only` | Refuse anything that sends to Hike or changes saved data |
 
-`hikecli --version` prints the version.
+`hkcli --version` prints the version.
 
 ## Command list
 
@@ -39,11 +39,11 @@ These work before or after the command name, for example `hikecli --json chats l
 | `groups list`, `groups info --group X` | Groups | [Contacts & groups](contacts.md#groups) |
 | `doctor` | Check the setup (`--connect` tests the live connection) | [Troubleshooting](troubleshooting.md) |
 
-Run `hikecli <command> --help` to see every flag.
+Run `hkcli <command> --help` to see every flag.
 
 ## Read-only mode
 
-`--read-only`, or `HIKECLI_READONLY` set to anything except an empty value, `0`, `false` or
+`--read-only`, or `HKCLI_READONLY` set to anything except an empty value, `0`, `false` or
 `no`, blocks `auth`, `auth logout`, `sync`, `history backfill`, `chats mark-read`,
 `send text`, `send file`, `media download` and `contacts refresh`. Reading commands,
 `auth status`, `groups info` and `doctor` still work.
@@ -76,6 +76,7 @@ On failure:
 | `no_media` | The message has nothing to download |
 | `login_failed` | The QR or SMS login did not complete |
 | `relay_error` | The live connection to Hike failed |
+| `error` | An unexpected failure, such as a disk error |
 | anything else | Hike's own error code, or `hike_error` |
 
 ## Exit codes
@@ -85,14 +86,14 @@ On failure:
 | 0 | Success |
 | 1 | Error (see the message or `error.code`) |
 | 2 | Wrong command or flags |
-| 3 | Login needed: run `hikecli auth` |
+| 3 | Login needed: run `hkcli auth` |
 | 130 | Interrupted with Ctrl+C |
 
 ## Environment variables
 
 | Variable | Meaning |
 | --- | --- |
-| `HIKECLI_STORE` | Store folder |
-| `HIKECLI_READONLY` | Read-only mode |
-| `HIKECLI_APP_VERSION`, `HIKECLI_BUILD_NUMBER` | App version reported to Hike (default: Hike Web 1.3.2, build 39) |
-| `HIKECLI_API_BASE`, `HIKECLI_SESSION_WS`, `HIKECLI_MQTT_WS` | Server addresses, used by the tests |
+| `HKCLI_STORE` | Store folder |
+| `HKCLI_READONLY` | Read-only mode |
+| `HKCLI_APP_VERSION`, `HKCLI_BUILD_NUMBER` | App version reported to Hike (default: Hike Web 1.3.2, build 39) |
+| `HKCLI_API_BASE`, `HKCLI_SESSION_WS`, `HKCLI_MQTT_WS` | Server addresses, used by the tests |

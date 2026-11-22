@@ -1,64 +1,71 @@
 ---
 title: Install
-description: "Install hikecli with uv, pipx or pip, or from source."
+description: "Install hkcli from a release download or with go install. One file, nothing else needed."
 ---
 
 # Install
 
-hikecli needs Python 3.10 or newer with SQLite FTS5, which python.org, Homebrew and most
-Linux builds include. `hikecli doctor` checks it.
+hkcli is a single program file with no runtime to install. It runs on macOS, Linux and
+Windows, on both Intel/AMD (`amd64`) and ARM (`arm64`) machines.
 
-## uv (recommended)
+## Download a release
 
-```bash
-uv tool install hikecli
-```
+Download the archive for your system from the
+[latest release](https://github.com/vinaycodeaxe/hkcli/releases/latest), unpack it, and put
+`hkcli` in a folder on your `PATH`.
 
-[uv](https://docs.astral.sh/uv/) installs hikecli in its own environment and puts the
-`hikecli` command on your `PATH` (usually `~/.local/bin`). This is also how the
-[OpenClaw skill](openclaw.md) installs it.
-
-## pipx
+**macOS and Linux:**
 
 ```bash
-pipx install hikecli
+os=$(uname -s | tr '[:upper:]' '[:lower:]')                 # darwin or linux
+arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')  # amd64 or arm64
+curl -fsSL "https://github.com/vinaycodeaxe/hkcli/releases/latest/download/hkcli_${os}_${arch}.tar.gz" | tar -xz hkcli
+sudo mv hkcli /usr/local/bin/
 ```
 
-## pip
+**Windows (PowerShell):**
+
+```powershell
+$dir = "$env:LOCALAPPDATA\Programs\hkcli"
+Invoke-WebRequest "https://github.com/vinaycodeaxe/hkcli/releases/latest/download/hkcli_windows_amd64.zip" -OutFile hkcli.zip
+Expand-Archive hkcli.zip -DestinationPath $dir -Force
+# Add the folder to your PATH once, then open a new terminal:
+[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$dir", "User")
+```
+
+Use `hkcli_windows_arm64.zip` on Windows on ARM. Every release has a `checksums.txt` file
+with SHA-256 checksums of the downloads.
+
+## go install
+
+With Go installed:
 
 ```bash
-python -m pip install hikecli
+go install github.com/vinaycodeaxe/hkcli/cmd/hkcli@latest
 ```
+
+This builds hkcli and puts it in `$(go env GOPATH)/bin`, usually `~/go/bin`. It is also how
+the [OpenClaw skill](openclaw.md) installs it.
 
 ## From source
 
 ```bash
-uv tool install git+https://github.com/vinaycodeaxe/hikecli
-```
-
-To work on the code:
-
-```bash
-git clone https://github.com/vinaycodeaxe/hikecli
-cd hikecli
-python -m pip install -e ".[test,docs]"
+git clone https://github.com/vinaycodeaxe/hkcli
+cd hkcli
+go build -o hkcli ./cmd/hkcli
 ```
 
 ## Check the install
 
 ```bash
-hikecli --version
-hikecli doctor
+hkcli --version
+hkcli doctor
 ```
 
-`doctor` fails its `login` check until you run [`hikecli auth`](auth.md); that is expected.
+`doctor` fails its `login` check until you run [`hkcli auth`](auth.md); that is expected.
 
 ## Upgrade and uninstall
 
-```bash
-uv tool upgrade hikecli
-uv tool uninstall hikecli
-```
-
-Uninstalling keeps your data in `~/.hikecli`. To remove it too, run `hikecli auth logout`
-first, then delete that folder. See [Store](store.md).
+To upgrade, download the latest release again or rerun the `go install` command. To
+uninstall, delete the `hkcli` file. Your data stays in `~/.hkcli`; to remove it too, run
+`hkcli auth logout` first, then delete that folder. See [Store](store.md).

@@ -9,11 +9,11 @@ description: "Fetch older messages for a chat from Hike's server."
 you ask for them:
 
 ```bash
-hikecli history backfill --chat Asha              # 5 pages of 50 messages
-hikecli history backfill --chat Asha --pages 20
+hkcli history backfill --chat Asha              # 5 pages of 50 messages
+hkcli history backfill --chat Asha --pages 20
 ```
 
-Each run continues where the previous one stopped. When Hike has no older messages, hikecli
+Each run continues where the previous one stopped. When Hike has no older messages, hkcli
 says it reached the start of the chat, and later runs return right away.
 
 | Flag | Meaning |
@@ -25,8 +25,8 @@ says it reached the start of the chat, and later runs return right away.
 To backfill every chat:
 
 ```bash
-hikecli --json chats list --limit 1000 | jq -r '.data[].id' |
-  while read -r id; do hikecli history backfill --chat "$id" --pages 20; done
+hkcli --json chats list --limit 1000 | jq -r '.data[].id' |
+  while read -r id; do hkcli history backfill --chat "$id" --pages 20; done
 ```
 
 History is best effort: Hike's server decides how far back it goes. Unlike WhatsApp, your

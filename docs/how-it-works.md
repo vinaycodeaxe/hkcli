@@ -1,17 +1,17 @@
 ---
 title: How it works
-description: "The Hike Web protocol hikecli speaks: QR login, the REST API, and MQTT over WebSocket."
+description: "The Hike Web protocol hkcli speaks: QR login, the REST API, and MQTT over WebSocket."
 ---
 
 # How it works
 
-Hike has no public API. hikecli speaks the same protocol as the Hike Web app at
+Hike has no public API. hkcli speaks the same protocol as the Hike Web app at
 `web.hikeapp.com`. Everything on this page was read from Hike Web's public JavaScript and
 checked against the live servers.
 
 ## Login
 
-- **QR.** hikecli opens
+- **QR.** hkcli opens
   `wss://session.hikeapp.com/session/v1/qr-login?webDeviceId=<uuid>&appId=hike-messenger`.
   The server sends `{"type": "QR_GENERATED", "qrToken": ..., "expiresInSeconds": 120}`, and
   the QR code encodes `qrToken` as-is. The client sends `PING` every 20 seconds and
@@ -48,7 +48,7 @@ Hike's relay is MQTT 3.1.1 over WebSocket at `wss://relay-ws.hikeapp.com/mqtt`:
   `<userId>`: messages and receipts at QoS 1, typing and presence at QoS 0.
 - **Hike extension:** the broker's PUBACK carries a payload after the packet id (a 2-byte
   length, then the bytes) holding the server message id. Standard MQTT libraries reject such a
-  PUBACK, so hikecli has a small MQTT client of its own (`hikecli/mqtt.py`).
+  PUBACK, so hkcli has a small MQTT client of its own (`internal/mqtt`).
 
 Packets are JSON with short keys:
 
@@ -67,6 +67,6 @@ Receipts are cumulative: "read up to `seq`" covers every earlier message in that
 
 ## Version string
 
-hikecli reports Hike Web's version (1.3.2, build 39). If Hike starts requiring a newer
-version, set `HIKECLI_APP_VERSION` and `HIKECLI_BUILD_NUMBER` to the values in the current
-Hike Web bundle until hikecli is updated.
+hkcli reports Hike Web's version (1.3.2, build 39). If Hike starts requiring a newer
+version, set `HKCLI_APP_VERSION` and `HKCLI_BUILD_NUMBER` to the values in the current
+Hike Web bundle until hkcli is updated.

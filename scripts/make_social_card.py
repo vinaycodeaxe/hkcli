@@ -38,10 +38,10 @@ def main() -> None:
     draw.line([(x + 19 * s, y + 23 * s), (x + 26 * s, y + 28.5 * s), (x + 19 * s, y + 34 * s)], fill=(15, 118, 110), width=4 * s, joint="curve")
     draw.line([(x + 30 * s, y + 35 * s), (x + 43 * s, y + 35 * s)], fill=(15, 118, 110), width=4 * s)
 
-    draw.text((90, 330), "hikecli", font=font(110), fill=WHITE)
+    draw.text((90, 330), "hkcli", font=font(110), fill=WHITE)
     draw.text((94, 460), "Hike in your terminal", font=font(46), fill=ACCENT)
     draw.text((94, 530), "Sync  \u00b7  Search  \u00b7  Send  \u00b7  OpenClaw skill", font=font(30), fill=MUTED)
-    draw.text((WIDTH - 90, 560), "vinaycodeaxe.github.io/hikecli", font=font(24), fill=MUTED, anchor="ra")
+    draw.text((WIDTH - 90, 560), "vinaycodeaxe.github.io/hkcli", font=font(24), fill=MUTED, anchor="ra")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     image.save(OUT, optimize=True)

@@ -7,7 +7,7 @@ on:
       - "docs/**"
       - "scripts/build_site.py"
       - "scripts/site_assets.py"
-      - "src/hikecli/__init__.py"
+      - "internal/version/version.go"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 

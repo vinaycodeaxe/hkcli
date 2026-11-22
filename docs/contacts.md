@@ -8,9 +8,9 @@ description: "List and refresh contacts, list groups and show group members."
 ## Contacts
 
 ```bash
-hikecli contacts list
-hikecli contacts list --query asha
-hikecli contacts refresh
+hkcli contacts list
+hkcli contacts list --query asha
+hkcli contacts refresh
 ```
 
 `sync` keeps contacts up to date. `contacts refresh` downloads them on demand and looks up
@@ -20,8 +20,8 @@ people in your phone's contacts.
 ## Groups
 
 ```bash
-hikecli groups list
-hikecli groups info --group Family
+hkcli groups list
+hkcli groups info --group Family
 ```
 
 `groups info` fetches the group's description and members, with their roles, live from Hike
@@ -30,6 +30,6 @@ and saves the member list.
 ## JSON
 
 ```bash
-hikecli contacts list --json              # user_id, name, phone, status, in_address_book
-hikecli groups info --group Family --json # id, name, description, members, my_permissions
+hkcli contacts list --json              # user_id, name, phone, status, in_address_book
+hkcli groups info --group Family --json # id, name, description, members, my_permissions
 ```

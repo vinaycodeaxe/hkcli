@@ -1,4 +1,4 @@
-"""Static assets for the hikecli website (CSS, JavaScript, favicon). Used by build_site.py."""
+"""Static assets for the hkcli website (CSS, JavaScript, favicon). Used by build_site.py."""
 
 FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect width="64" height="64" rx="14" fill="#0f766e"/>
@@ -11,7 +11,7 @@ FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 
 # Runs in <head> before CSS paints, so a saved theme never flashes.
 THEME_BOOTSTRAP = (
-    "(function(){try{var t=localStorage.getItem('hikecli-theme');"
+    "(function(){try{var t=localStorage.getItem('hkcli-theme');"
     "if(t==='light'||t==='dark'){document.documentElement.dataset.theme=t;}}catch(e){}})();"
 )
 
@@ -151,7 +151,7 @@ JS = """
     themeBtn.addEventListener("click", function () {
       var next = currentTheme() === "dark" ? "light" : "dark";
       root.dataset.theme = next;
-      try { localStorage.setItem("hikecli-theme", next); } catch (e) {}
+      try { localStorage.setItem("hkcli-theme", next); } catch (e) {}
     });
   }
 

@@ -1,7 +1,7 @@
 """In-process fake of Hike's REST API, QR-login socket and MQTT relay, for end-to-end tests.
 
 It follows the wire formats Hike Web uses (see README "How it works"), and parses
-MQTT independently of hikecli's encoder so codec bugs are not hidden.
+MQTT independently of hkcli's encoder so codec bugs are not hidden.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ class FakeHike:
         self.relay.shutdown()
 
     def env(self) -> dict:
-        return {"HIKECLI_API_BASE": self.api_base, "HIKECLI_SESSION_WS": self.session_ws, "HIKECLI_MQTT_WS": self.mqtt_ws}
+        return {"HKCLI_API_BASE": self.api_base, "HKCLI_SESSION_WS": self.session_ws, "HKCLI_MQTT_WS": self.mqtt_ws}
 
     # ---- test controls ----------------------------------------------------------
 
@@ -238,6 +238,8 @@ class FakeHike:
             self.logout_requests.append(body)
             return self._reply(h, 200, {"success": True})
         if path == "/auth/v1/user/privacy-settings":
+            if method != "PATCH":  # the real server only accepts updates here
+                return self._reply(h, 405, {"success": False, "code": "BAD_REQUEST", "message": "Method not supported"})
             return self._reply(h, 200, {"success": True, "data": {"lastSeen": "EVERYBODY"}})
         if path == "/msg-history/v1/conversations/web":
             return self._reply(h, 200, {"success": True, "data": {"items": self.conversations}})

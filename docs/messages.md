@@ -11,10 +11,10 @@ bring it up to date.
 ## Chats
 
 ```bash
-hikecli chats list                 # newest first, pinned chats on top
-hikecli chats list --unread
-hikecli chats list --groups        # or --direct
-hikecli chats list --query asha    # name, phone or id
+hkcli chats list                 # newest first, pinned chats on top
+hkcli chats list --unread
+hkcli chats list --groups        # or --direct
+hkcli chats list --query asha    # name, phone or id
 ```
 
 The `ID` column is what `--chat`, `--to` and `--group` accept when a name is ambiguous.
@@ -22,9 +22,9 @@ The `ID` column is what `--chat`, `--to` and `--group` accept when a name is amb
 ## Read a chat
 
 ```bash
-hikecli messages list --chat Asha                  # latest 50, oldest first
-hikecli messages list --chat Asha --limit 200
-hikecli messages list --chat Asha --before 2026-11-01
+hkcli messages list --chat Asha                  # latest 50, oldest first
+hkcli messages list --chat Asha --limit 200
+hkcli messages list --chat Asha --before 2026-11-01
 ```
 
 `--before` takes `YYYY-MM-DD`, `"YYYY-MM-DD HH:MM"` or epoch milliseconds, which lets you
@@ -33,9 +33,9 @@ page backwards. Each line ends with the message id in parentheses.
 ## Search
 
 ```bash
-hikecli messages search "lunch tomorrow"
-hikecli messages search invoice --chat Ravi
-hikecli messages search "deploy*" --limit 100
+hkcli messages search "lunch tomorrow"
+hkcli messages search invoice --chat Ravi
+hkcli messages search "deploy*" --limit 100
 ```
 
 - Every word must appear in the message text, caption or file name.
@@ -48,14 +48,14 @@ Search uses SQLite FTS5, so it stays fast with years of messages.
 ## One message
 
 ```bash
-hikecli messages show --chat Asha --id 23:1760000004000
-hikecli messages show --chat Asha --id 23:1760000004000 --json   # includes the raw Hike packet
+hkcli messages show --chat Asha --id 23:1760000004000
+hkcli messages show --chat Asha --id 23:1760000004000 --json   # includes the raw Hike packet
 ```
 
 ## Mark a chat as read
 
 ```bash
-hikecli chats mark-read --chat Asha
+hkcli chats mark-read --chat Asha
 ```
 
 This sends a read receipt for the latest message, so the sender sees it as read, and clears

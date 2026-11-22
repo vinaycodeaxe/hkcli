@@ -1,15 +1,13 @@
-import io
 import json
 import os
 import re
 import sqlite3
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 
 from fakehike import GROUP, NEW_PEER, PEER, T0, USER
-from hikecli.store import FileLock
+from lockhelper import FileLock
 
 
 def _session(store: Path) -> dict:
@@ -96,10 +94,9 @@ def test_sync_follow_stores_live_events(fake, store, cli, logged_in):
     code, sent, err = cli("send", "text", "--to", "Asha", "--message", "did you get this?")
     assert code == 0, err
     my_server_id = sent["data"]["server_id"]
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     proc = subprocess.Popen(
-        [sys.executable, "-m", "hikecli", "--json", "sync", "--idle-exit", "3"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        [str(cli.bin), "--json", "sync", "--idle-exit", "3"],
+        env=dict(os.environ), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
     )
     try:
         assert fake.wait_for(lambda: fake.packets("fdr")), "sync never finished its catch-up"
@@ -169,15 +166,14 @@ def test_history_backfill_reaches_the_start(cli, logged_in):
 def test_read_only_blocks_changes_but_allows_reading(cli, logged_in, monkeypatch):
     code, out, _ = cli("--read-only", "send", "text", "--to", "Asha", "--message", "x")
     assert code == 1 and out["error"]["code"] == "read_only"
-    monkeypatch.setenv("HIKECLI_READONLY", "1")
+    monkeypatch.setenv("HKCLI_READONLY", "1")
     assert cli("sync", "--once")[1]["error"]["code"] == "read_only"
     code, out, _ = cli("chats", "list")
     assert code == 0 and len(out["data"]) == 2
 
 
-def test_otp_login_retries_a_wrong_code(fake, store, cli, monkeypatch):
-    monkeypatch.setattr(sys, "stdin", io.StringIO("000000\n123456\n"))
-    code, out, err = cli("auth", "--phone", "+91 98000 00001", "--no-sync")
+def test_otp_login_retries_a_wrong_code(fake, store, cli):
+    code, out, err = cli("auth", "--phone", "+91 98000 00001", "--no-sync", input="000000\n123456\n")
     assert code == 0, err
     device = json.loads((store / "device.json").read_text())["deviceId"]
     assert fake.otp_requests == [{"mobileNumber": "9800000001", "countryCode": "+91", "deviceType": "WEB", "deviceFingerprint": device}]
@@ -198,6 +194,7 @@ def test_second_sync_is_refused_while_store_is_locked(store, cli, logged_in):
 def test_doctor_groups_and_logout(fake, store, cli, logged_in):
     code, out, _ = cli("doctor", "--connect")
     assert code == 0 and out["data"]["ok"], out
+    assert cli("auth", "status", "--check")[1]["data"]["server_check"] == "ok"
     members = cli("groups", "info", "--group", "Family")[1]["data"]["members"]
     assert [m["name"] for m in members] == ["Me", "Ravi"]
     assert cli("groups", "list")[1]["data"][0]["id"] == GROUP

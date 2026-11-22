@@ -1,11 +1,16 @@
+# Build output (go build -o dist/, goreleaser, website)
+dist/
+/hkcli
+/hkcli.exe
+*.test
+coverage.out
+# Python caches from the docs builder and end-to-end tests
 __pycache__/
 *.py[cod]
-*.egg-info/
-build/
-dist/
 .pytest_cache/
 .venv/
 # Local stores hold login tokens and message history. Never commit them.
+.hkcli/
 .hikecli/
 session.json
 *.db

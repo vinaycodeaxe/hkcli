@@ -15,30 +15,72 @@ concurrency:
 
 jobs:
   test:
-    name: test (${{ matrix.os }}, Python ${{ matrix.python }})
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.10", "3.14"]
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up Python
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: stable
+
+      - name: Set up Python (end-to-end tests)
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.12"
 
-      - name: Install
-        run: python -m pip install -e ".[test]"
+      - name: Vet
+        run: go vet ./...
 
-      - name: Test
-        run: python -m pytest -q
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted"
+            echo "::error::Run gofmt -w on the files above"
+            exit 1
+          fi
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Build
+        run: go build -o dist/ ./cmd/hkcli
+
+      - name: End-to-end tests
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pytest -q tests
+
+  min-go:
+    name: oldest supported Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build and test
+        run: |
+          go build ./...
+          go test ./...
 
   docs:
     name: docs site
@@ -60,23 +102,24 @@ jobs:
           python -m pip install "markdown>=3.5"
           python scripts/build_site.py
 
-  package:
-    name: package
+  release-build:
+    name: release build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
-          python-version: "3.12"
+          go-version: stable
 
-      - name: Build and check
-        run: |
-          python -m pip install build twine
-          python -m build
-          python -m twine check --strict dist/*
+      - name: Build every release target
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean

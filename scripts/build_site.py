@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the hikecli website from docs/*.md into dist/site (published by GitHub Pages).
+"""Build the hkcli website from docs/*.md into dist/site (published by GitHub Pages).
 
     python -m pip install "markdown>=3.5"
     python scripts/build_site.py [--out DIR] [--site-url URL]
@@ -28,24 +28,24 @@ ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
 
 OWNER = "vinaycodeaxe"
-REPO = "hikecli"
+REPO = "hkcli"
 REPO_URL = f"https://github.com/{OWNER}/{REPO}"
 EDIT_URL = f"{REPO_URL}/edit/main/docs"
 DEFAULT_SITE_URL = f"https://{OWNER}.github.io/{REPO}/"
 
-PRODUCT = "hikecli"
+PRODUCT = "hkcli"
 TAGLINE = "Hike in your terminal"
 SUMMARY = (
-    "A single CLI that links to Hike as a web device, keeps a searchable copy of your chats "
+    "A single binary that links to Hike as a web device, keeps a searchable copy of your chats "
     "in SQLite, and sends messages from the terminal, scripts and AI agents like OpenClaw."
 )
-INSTALL_COMMAND = "uv tool install hikecli"
+INSTALL_COMMAND = "go install github.com/vinaycodeaxe/hkcli/cmd/hkcli@latest"
 FEATURES = ["Pair", "Sync", "Search", "Send", "Media", "Contacts", "Groups", "History", "OpenClaw", "Doctor"]
-DISCLAIMER = "hikecli is an independent project and is not affiliated with or endorsed by Hike Messenger Ltd."
+DISCLAIMER = "hkcli is an independent project and is not affiliated with or endorsed by Hike Messenger Ltd."
 
 SECTIONS = [
     ("Start", ["index.md", "install.md", "quickstart.md", "openclaw.md"]),
-    ("Using hikecli", ["auth.md", "sync.md", "messages.md", "history.md", "send.md", "media.md", "contacts.md"]),
+    ("Using hkcli", ["auth.md", "sync.md", "messages.md", "history.md", "send.md", "media.md", "contacts.md"]),
     ("Reference", ["commands.md", "store.md", "how-it-works.md", "troubleshooting.md", "release.md"]),
 ]
 
@@ -76,8 +76,8 @@ def esc(text) -> str:
 
 
 def read_version() -> str:
-    text = (ROOT / "src" / "hikecli" / "__init__.py").read_text(encoding="utf-8")
-    match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
+    text = (ROOT / "internal" / "version" / "version.go").read_text(encoding="utf-8")
+    match = re.search(r'Version\s*=\s*"([^"]+)"', text)
     return match.group(1) if match else "0.0.0"
 
 
@@ -391,7 +391,7 @@ def build(out: Path, site_url_override: str | None = None) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build the hikecli website from docs/.")
+    parser = argparse.ArgumentParser(description="Build the hkcli website from docs/.")
     parser.add_argument("--out", default=str(ROOT / "dist" / "site"), help="output folder (default: dist/site)")
     parser.add_argument("--site-url", help="public URL of the site (default: from docs/CNAME, else GitHub Pages)")
     args = parser.parse_args()
