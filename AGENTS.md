@@ -14,7 +14,8 @@ Notes for people and coding agents working on this repository.
 - `docs/`: website pages (Markdown with a small frontmatter). `scripts/build_site.py` builds them into `dist/site`.
 - `skills/hkcli/SKILL.md`: the OpenClaw skill published to ClawHub.
 - `.github/workflows/`: `ci.yml` (tests, docs, release build), `pages.yml` (website),
-  `release.yml` (GoReleaser release and ClawHub). `.goreleaser.yaml` defines the release builds.
+  `release.yml` (GoReleaser release, then ClawHub), `clawhub.yml` (publishes the skill to
+  ClawHub; also runs by hand). `.goreleaser.yaml` defines the release builds.
 
 ## Commands
 

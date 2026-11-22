@@ -1,0 +1,49 @@
+name: clawhub
+
+# Publishes the OpenClaw skill in skills/hkcli to ClawHub.
+# release.yml calls this for every release. Run it by hand (Actions > clawhub > Run workflow)
+# to publish a change to the skill without a new hkcli release.
+# Real publishes need the CLAWHUB_TOKEN secret; dry runs need nothing.
+
+on:
+  workflow_call:
+    inputs:
+      dry_run:
+        type: boolean
+        required: true
+      changelog:
+        type: string
+        default: ""
+    secrets:
+      CLAWHUB_TOKEN:
+        required: false
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview only (publish nothing)
+        type: boolean
+        default: true
+      changelog:
+        description: What changed (optional; ClawHub writes one when empty)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to ClawHub
+    permissions:
+      contents: read
+      id-token: write
+    uses: openclaw/clawhub/.github/workflows/skill-publish.yml@dfb087d90079c84f74ed0c5de27c302696d42178 # v0.27.0
+    with:
+      skill_path: skills/hkcli
+      dry_run: ${{ inputs.dry_run }}
+      changelog: ${{ inputs.changelog }}
+      # Passing categories and topics makes every publish a new version, even if SKILL.md did not change.
+      categories: communication
+      topics: hike,messaging,chat,cli
+    secrets:
+      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}

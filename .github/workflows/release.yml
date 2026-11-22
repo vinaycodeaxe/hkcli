@@ -85,11 +85,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: openclaw/clawhub/.github/workflows/skill-publish.yml@dfb087d90079c84f74ed0c5de27c302696d42178 # v0.27.0
+    uses: ./.github/workflows/clawhub.yml
     with:
-      skill_path: skills/hkcli
-      # Dry run until the repository variable CLAWHUB_PUBLISH is "true" and the CLAWHUB_TOKEN secret is set.
+      # Dry run unless the repository variable CLAWHUB_PUBLISH is "true" (needs the CLAWHUB_TOKEN secret).
       dry_run: ${{ vars.CLAWHUB_PUBLISH != 'true' }}
       changelog: "hkcli ${{ github.ref_name }}"
     secrets:
-      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}
+      CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
