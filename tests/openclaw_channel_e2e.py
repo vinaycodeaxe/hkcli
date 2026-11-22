@@ -3,8 +3,8 @@
 Installs the packed plugin into an isolated OpenClaw state dir, links the agent's Hike account
 through `openclaw channels login` (the fake confirms the QR login by itself), runs a real
 `openclaw gateway`, pushes a DM from an unknown sender and expects the plugin's pairing reply on
-the fake relay. Then approves the code with --notify, expects the confirmation, stops the Gateway
-and checks that no hkcli process is left behind.
+the fake relay. Then approves the request through the Gateway with notify (the Control UI path),
+expects the confirmation, stops the Gateway and checks that no hkcli sync is left behind.
 
 Usage: python tests/openclaw_channel_e2e.py --hkcli PATH --plugin PATH.tgz
 Needs `openclaw` on PATH, hkcli 0.3.0+ built from this repo, and requirements-dev.txt.
@@ -13,6 +13,7 @@ Needs `openclaw` on PATH, hkcli 0.3.0+ built from this repo, and requirements-de
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import secrets
@@ -90,6 +91,15 @@ def hkcli_sync_processes(hkcli: str) -> list[tuple[int, str]]:
     return found
 
 
+def gateway_call(openclaw: str, method: str, params: dict, env: dict):
+    proc = run([openclaw, "gateway", "call", method, "--params", json.dumps(params), "--json"], env, timeout=120)
+    text = proc.stdout.strip()
+    start = min((i for i in (text.find("{"), text.find("[")) if i >= 0), default=-1)
+    if start < 0:
+        raise SystemExit(f"{method} returned no JSON")
+    return json.loads(text[start:])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hkcli", required=True)
@@ -156,7 +166,19 @@ def main() -> int:
         if sent_to(fake, PEER):
             raise SystemExit(f"answered Hike history from before the first start: {sent_to(fake, PEER)}")
 
-        run([openclaw, "pairing", "approve", "hike", code, "--notify"], env, timeout=120)
+        # The CLI approves by code; the Gateway path (used by the Control UI) can also notify.
+        listing = gateway_call(openclaw, "channels.pairing.list", {"channel": "hike"}, env)
+        request = next(r for r in listing["requests"] if r["senderId"] == NEW_PEER)
+        if not request.get("notifySupported"):
+            raise SystemExit(f"pairing request does not support notification: {request}")
+        approved = gateway_call(
+            openclaw,
+            "channels.pairing.approve",
+            {"channel": "hike", "accountId": request["accountId"], "requestId": request["requestId"], "notify": True},
+            env,
+        )
+        if approved.get("notification") != "sent":
+            raise SystemExit(f"approval notification was not sent: {approved}")
         wait_for(lambda: len(sent_to(fake, NEW_PEER)) >= 2, 60, "the approval confirmation")
         log(f"approval confirmation: {sent_to(fake, NEW_PEER)[-1]!r}")
         replies_before = len(sent_to(fake, NEW_PEER))
@@ -184,9 +206,13 @@ def main() -> int:
                     pass
             if leftovers:
                 listing = "\n".join(f"{pid} {cmd}" for pid, cmd in leftovers)
-                failure = failure or SystemExit(f"hkcli left running after the Gateway stopped:\n{listing}")
+                log(f"hkcli left running after the Gateway stopped:\n{listing}")
+                failure = failure or SystemExit("hkcli sync was left running after the Gateway stopped")
+            else:
+                log("no hkcli sync left running after the Gateway stopped")
             log(f"gateway exit code: {gateway.returncode}")
             lines = gateway_log.read_text(errors="replace").splitlines() if gateway_log.exists() else []
+            lines = [line for line in lines if "startup phase:" not in line]
             print("----- gateway log (tail) -----\n" + "\n".join(lines[-(600 if failure else 150):]), flush=True)
         fake.stop()
     if failure is not None:

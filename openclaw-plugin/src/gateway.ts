@@ -33,6 +33,8 @@ function createLog(ctx: ChannelGatewayContext<ResolvedHikeAccount>, core: Plugin
   };
 }
 
+type SyncProcessStore = ReturnType<typeof openSyncProcessStore>;
+
 function cursorStore(core: PluginRuntime, accountId: string): InboundCursorStore {
   const store = core.state.openKeyedStoreV2<InboundCursorState>({ namespace: "inbound-cursor", maxEntries: 256 });
   return {
@@ -43,7 +45,7 @@ function cursorStore(core: PluginRuntime, accountId: string): InboundCursorStore
   };
 }
 
-function syncProcessStore(core: PluginRuntime) {
+function openSyncProcessStore(core: PluginRuntime) {
   return core.state.openKeyedStoreV2<SyncProcessRecord>({ namespace: "sync-process", maxEntries: 256 });
 }
 
@@ -64,7 +66,7 @@ function describeExit(exit: SupervisedExit): string {
  * store lock. Kill it only when the lock holder is the process this plugin itself started.
  */
 async function reclaimOrphan(
-  core: PluginRuntime,
+  processes: SyncProcessStore,
   account: ResolvedHikeAccount,
   holderPid: number | undefined,
   log: HikeLog,
@@ -72,7 +74,7 @@ async function reclaimOrphan(
   if (!holderPid) {
     return false;
   }
-  const record = await syncProcessStore(core).lookup(account.accountId).catch(() => undefined);
+  const record = await processes.lookup(account.accountId).catch(() => undefined);
   if (!record || record.pid !== holderPid || record.storeDir !== account.storeDir) {
     return false;
   }
@@ -109,9 +111,18 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
   }
 
   const abort = new AbortController();
+  const processes = openSyncProcessStore(core);
   const gate = await InboundGate.open({
     store: cursorStore(core, accountId),
-    onError: (error) => log.warn(`hike: could not save the inbound cursor: ${String(error)}`),
+    onError: (error) => {
+      // During Gateway shutdown plugin state closes first; the last periodic save stands.
+      const message = `hike: could not save the inbound cursor: ${String(error)}`;
+      if (abort.signal.aborted) {
+        log.debug?.(message);
+      } else {
+        log.warn(message);
+      }
+    },
   });
   const handle = createHikeInboundHandler({
     cfg: ctx.cfg,
@@ -200,7 +211,7 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
         lastError = undefined;
         if (child.pid) {
           const record: SyncProcessRecord = { pid: child.pid, storeDir: account.storeDir, startedAt: Date.now() };
-          void syncProcessStore(core)
+          void processes
             .register(accountId, record)
             .catch(() => undefined);
         }
@@ -254,7 +265,7 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
           return { action: "stop" };
         }
         if (lastError?.code === "store_locked") {
-          const reclaimed = await reclaimOrphan(core, account, lockHolderPid(lastError.message), log);
+          const reclaimed = await reclaimOrphan(processes, account, lockHolderPid(lastError.message), log);
           const message = `${lastError.message}. Stop the other hkcli sync on ${account.storeDir}.`;
           status({
             connected: false,
@@ -284,7 +295,7 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
       gate.advance(Date.now());
     }
     await gate.flush();
-    await syncProcessStore(core)
+    await processes
       .delete(accountId)
       .catch(() => undefined);
     if (activeAccounts.get(accountId)?.abort === abort) {

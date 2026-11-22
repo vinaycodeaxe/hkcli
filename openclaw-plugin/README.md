@@ -40,11 +40,12 @@ the agent. Approve them on the Gateway host:
 
 ```bash
 openclaw pairing list hike
-openclaw pairing approve hike <code> --notify
+openclaw pairing approve hike <code>
 ```
 
-`--notify` sends them a confirmation. Other policies: `"allowlist"` (only `allowFrom`),
-`"open"` (anyone; requires `allowFrom: ["*"]`), `"disabled"`.
+To also send them a confirmation message, approve the request in the Control UI
+(Settings > Channels > DM access requests) with notification turned on. Other policies:
+`"allowlist"` (only `allowFrom`), `"open"` (anyone; requires `allowFrom: ["*"]`), `"disabled"`.
 
 ## Groups
 

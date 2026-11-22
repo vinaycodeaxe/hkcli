@@ -121,9 +121,16 @@ jobs:
           openclaw plugins inspect hike --runtime --json > "$RUNNER_TEMP/inspect.json"
           node -e '
             const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-            console.log(JSON.stringify(report, null, 2).slice(0, 20000));
-            const text = JSON.stringify(report);
-            if (!text.includes("\"hike\"")) throw new Error("inspect output does not mention the hike channel");
+            const { plugin } = report;
+            console.log(JSON.stringify({ status: plugin.status, imported: plugin.imported, channelIds: plugin.channelIds,
+              capabilities: report.capabilities, diagnostics: report.diagnostics, dependencyStatus: plugin.dependencyStatus }, null, 2));
+            const problems = [];
+            if (plugin.status !== "loaded") problems.push(`status ${plugin.status}`);
+            if (plugin.imported !== true) problems.push("runtime entry not imported");
+            if (!plugin.channelIds?.includes("hike")) problems.push("hike channel not registered");
+            if ((report.diagnostics ?? []).length > 0) problems.push("diagnostics reported");
+            if (plugin.dependencyStatus && plugin.dependencyStatus.requiredInstalled !== true) problems.push("dependencies missing");
+            if (problems.length > 0) throw new Error(problems.join("; "));
           ' "$RUNNER_TEMP/inspect.json"
 
       - name: Upload package
