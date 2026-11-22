@@ -1,0 +1,98 @@
+name: plugin-bootstrap
+
+# Temporary: resolves the pinned npm versions, generates package-lock.json and the manifest's
+# channelConfigs for openclaw-plugin/, and reports a first type-check. Removed once committed.
+
+on:
+  push:
+    branches: [hike-channel]
+    paths:
+      - ".github/workflows/plugin-bootstrap.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: openclaw-plugin
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Resolve versions
+        run: |
+          set -euo pipefail
+          npm --version
+          for pkg in openclaw typescript zod @types/node; do
+            echo "== $pkg"; npm view "$pkg" dist-tags --json
+          done
+          npm view openclaw time --json | node -e 'const t=JSON.parse(require("fs").readFileSync(0,"utf8")); console.log(Object.entries(t).slice(-8))'
+          OC=$(npm view openclaw version)
+          TS=$(npm view typescript version)
+          NT=$(npm view "@types/node@^24" version --json | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); console.log(Array.isArray(v)?v.at(-1):v)')
+          ZOD=$(npm view "openclaw@$OC" dependencies.zod)
+          echo "openclaw=$OC typescript=$TS @types/node=$NT zod=$ZOD"
+          npm pkg set "devDependencies.openclaw=$OC" "devDependencies.typescript=$TS" "devDependencies.@types/node=$NT" "dependencies.zod=$ZOD"
+          npm pkg set "peerDependencies.openclaw=>=$OC" "openclaw.compat.pluginApi=>=$OC" "openclaw.build.openclawVersion=$OC" "openclaw.install.minHostVersion=>=$OC"
+          cat package.json
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Inspect the openclaw package
+        continue-on-error: true
+        run: |
+          node -e '
+            const pkg = require("./node_modules/openclaw/package.json");
+            const fs = require("fs");
+            const subs = ["account-core","account-helpers","account-id","allow-from","channel-config-helpers","channel-config-schema","channel-contract","channel-core","channel-dm-policy","channel-inbound","channel-ingress-runtime","channel-outbound","channel-pairing","channel-policy","channel-send-result","channel-setup","channel-status","error-runtime","gateway-runtime","reply-payload","routing","runtime-env","runtime-group-policy","runtime-store","setup","setup-runtime","setup-tools","state-paths","status-helpers","text-chunking"];
+            for (const s of subs) {
+              const e = pkg.exports["./plugin-sdk/" + s];
+              const types = e && e.types && fs.existsSync("node_modules/openclaw/" + e.types);
+              const js = e && e.default && fs.existsSync("node_modules/openclaw/" + e.default);
+              console.log(s.padEnd(26), e ? "" : "NOT EXPORTED", "types:", Boolean(types), "js:", Boolean(js));
+            }
+          '
+          ls node_modules/.bin | head -50
+          npx tsc --version
+
+      - name: Type-check
+        continue-on-error: true
+        run: npx tsc -p tsconfig.json 2>&1 | tee ../typecheck.log
+
+      - name: Build
+        continue-on-error: true
+        run: npx tsc -p tsconfig.build.json 2>&1 | tee ../build.log; ls -la dist || true
+
+      - name: Generate manifest
+        continue-on-error: true
+        run: node scripts/manifest.mjs --write 2>&1 | tee ../manifest.log
+
+      - name: Test
+        continue-on-error: true
+        run: npm test 2>&1 | tee ../test.log
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugin-bootstrap
+          path: |
+            openclaw-plugin/package.json
+            openclaw-plugin/package-lock.json
+            openclaw-plugin/openclaw.plugin.json
+            typecheck.log
+            build.log
+            manifest.log
+            test.log

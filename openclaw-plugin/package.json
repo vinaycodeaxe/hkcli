@@ -1,0 +1,107 @@
+{
+  "name": "@vinaycodeaxe/hkcli-channel",
+  "version": "0.1.0",
+  "description": "Hike Messenger channel for OpenClaw: the agent gets its own Hike account, driven by the hkcli command line tool.",
+  "license": "MIT",
+  "author": "Vinay Chaudhary",
+  "homepage": "https://vinaycodeaxe.github.io/hkcli/openclaw-channel.html",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vinaycodeaxe/hkcli.git",
+    "directory": "openclaw-plugin"
+  },
+  "bugs": {
+    "url": "https://github.com/vinaycodeaxe/hkcli/issues"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "openclaw-channel",
+    "hike",
+    "hkcli"
+  ],
+  "type": "module",
+  "files": [
+    "dist/",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24.16.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "manifest:write": "node scripts/manifest.mjs --write",
+    "manifest:check": "node scripts/manifest.mjs --check",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "openclaw": "2026.11.6",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.11.6"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "setupEntry": "./dist/setup-entry.js",
+    "channel": {
+      "id": "hike",
+      "label": "Hike",
+      "selectionLabel": "Hike (via hkcli)",
+      "detailLabel": "Hike Messenger",
+      "docsPath": "https://vinaycodeaxe.github.io/hkcli/openclaw-channel.html",
+      "docsLabel": "hike",
+      "blurb": "Hike Messenger through the hkcli CLI; give the agent its own Hike number and link it with a QR code.",
+      "setup": {
+        "fields": [
+          {
+            "key": "cliPath",
+            "kind": "string",
+            "cli": {
+              "flags": "--cli-path <path>",
+              "description": "hkcli command or path (default: hkcli)"
+            }
+          },
+          {
+            "key": "storeDir",
+            "kind": "string",
+            "cli": {
+              "flags": "--store-dir <dir>",
+              "description": "hkcli store directory for this account"
+            }
+          }
+        ]
+      }
+    },
+    "install": {
+      "clawhubSpec": "clawhub:@vinaycodeaxe/hkcli-channel",
+      "npmSpec": "@vinaycodeaxe/hkcli-channel",
+      "defaultChoice": "clawhub",
+      "minHostVersion": ">=2026.11.6"
+    },
+    "compat": {
+      "pluginApi": ">=2026.11.6"
+    },
+    "build": {
+      "openclawVersion": "2026.11.6"
+    },
+    "release": {
+      "publishToClawHub": true
+    }
+  }
+}

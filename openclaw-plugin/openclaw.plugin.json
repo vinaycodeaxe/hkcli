@@ -1,0 +1,16 @@
+{
+  "id": "hike",
+  "name": "Hike",
+  "description": "Hike Messenger channel: the agent gets its own Hike account through the hkcli command line tool.",
+  "categories": [
+    "channels"
+  ],
+  "channels": [
+    "hike"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
