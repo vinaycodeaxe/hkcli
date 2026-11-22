@@ -1,10 +1,12 @@
 """End-to-end check of the OpenClaw Hike channel plugin against the fake Hike servers (no LLM).
 
 Installs the packed plugin into an isolated OpenClaw state dir, links the agent's Hike account
-through `openclaw channels login` (the fake confirms the QR login by itself), runs a real
-`openclaw gateway`, pushes a DM from an unknown sender and expects the plugin's pairing reply on
-the fake relay. Then approves the request through the Gateway with notify (the Control UI path),
-expects the confirmation, stops the Gateway and checks that no hkcli sync is left behind.
+through `openclaw channels login` (the fake confirms the QR login by itself) and runs a real
+`openclaw gateway`. Then, over the fake relay: an unknown sender's DM gets the pairing reply;
+approving it through the Gateway with notify (the Control UI path) sends the confirmation and the
+sender's next DM reaches the agent; in an allowed group only the @mention reaches the agent.
+Finally `channels logout` signs the device out, and no hkcli sync may be left running.
+Without a model the agent turn itself fails, so dispatch is read from the Gateway's diagnostics.
 
 Usage: python tests/openclaw_channel_e2e.py --hkcli PATH --plugin PATH.tgz
 Needs `openclaw` on PATH, hkcli 0.3.0+ built from this repo, and requirements-dev.txt.
@@ -28,7 +30,7 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fakehike import NEW_PEER, PEER, USER, FakeHike  # noqa: E402
+from fakehike import GROUP, NEW_PEER, PEER, PEER2, USER, FakeHike  # noqa: E402
 
 
 def log(message: str) -> None:
@@ -74,6 +76,20 @@ def dm(sender: str, text: str) -> dict:
         "s": f"{ts % 100000}:{ts}", "ts": ts, "d": {"st": "text", "ts": ts, "m": text, "p": text},
         "pi": {"n": "Neel", "p": "+919800000009"},
     }
+
+
+def group_message(sender: str, text: str, mention_me: bool) -> dict:
+    ts = int(time.time() * 1000)
+    data = {"st": "text", "ts": ts, "m": text, "p": text}
+    if mention_me:
+        data["md"] = [{"uid": USER, "num": "+919800000001", "start": 0, "length": 3}]
+    return {"t": "m", "st": "text", "f": sender, "to": GROUP, "i": str(uuid.uuid4()), "s": f"{ts % 100000}:{ts}", "ts": ts, "d": data}
+
+
+def dispatched(log_file: Path, chat: str) -> bool:
+    """The Gateway logs one `message processed` diagnostic per message handed to the agent."""
+    text = log_file.read_text(errors="replace") if log_file.exists() else ""
+    return re.search(rf"message processed: channel=hike chatId=\S*{re.escape(chat)}\b", text) is not None
 
 
 def relay_subscribed(fake: FakeHike) -> bool:
@@ -137,6 +153,7 @@ def main() -> int:
         run([openclaw, "config", "set", "gateway.port", str(port), "--strict-json"], env)
         run([openclaw, "config", "set", "channels.hike.enabled", "true", "--strict-json"], env)
         run([openclaw, "config", "set", "channels.hike.cliPath", hkcli], env)
+        run([openclaw, "config", "set", "channels.hike.groups", json.dumps({GROUP: {"allowFrom": ["*"]}}), "--strict-json"], env)
 
         run([openclaw, "channels", "login", "--channel", "hike"], env, timeout=180)
         session = state / "hike" / "default" / "session.json"
@@ -183,9 +200,30 @@ def main() -> int:
         log(f"approval confirmation: {sent_to(fake, NEW_PEER)[-1]!r}")
         replies_before = len(sent_to(fake, NEW_PEER))
         fake.push(dm(NEW_PEER, "thanks!"))
-        time.sleep(5)
+        wait_for(lambda: dispatched(gateway_log, NEW_PEER), 60, "the approved sender's DM to reach the agent")
         if any("Pairing code" in t for t in sent_to(fake, NEW_PEER)[replies_before:]):
             raise SystemExit("approved sender was asked to pair again")
+        log("approved sender's DM was dispatched to the agent")
+
+        fake.push(group_message(PEER2, "dinner at 8?", mention_me=False))
+        time.sleep(5)
+        if dispatched(gateway_log, GROUP):
+            raise SystemExit("a group message without a mention reached the agent")
+        fake.push(group_message(PEER2, "@Me are you joining?", mention_me=True))
+        wait_for(lambda: dispatched(gateway_log, GROUP), 60, "the @mention in the group to reach the agent")
+        log("group: unmentioned message dropped, @mention dispatched")
+
+        status = run([openclaw, "channels", "status", "--channel", "hike", "--probe", "--json"], env, timeout=120, check=False)
+        if '"linked": true' not in status.stdout.replace('"linked":true', '"linked": true'):
+            log("warning: channels status did not report the account as linked")
+
+        run([openclaw, "channels", "logout", "--channel", "hike"], env, timeout=120)
+        if session.exists():
+            raise SystemExit("logout left session.json behind")
+        if not fake.logout_requests:
+            raise SystemExit("logout did not sign the device out of Hike")
+        wait_for(lambda: not hkcli_sync_processes(hkcli), 30, "hkcli sync to stop after logout")
+        log("logout stopped the account and signed out of Hike")
     except BaseException as error:  # noqa: BLE001 - report every failure after cleanup
         failure = error
     finally:
