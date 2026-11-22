@@ -308,6 +308,7 @@ type Message struct {
 	ReplyToSender string
 	ReplyToText   string
 	Forwarded     bool
+	Mentions      []Mention
 	SenderName    string
 	SenderPhone   string
 	State         string
@@ -323,6 +324,28 @@ func (m *Message) ID() string {
 		return m.ServerID
 	}
 	return m.ClientID
+}
+
+// Mention is an @mention in a message: packet d.md, [{uid, num, start, length}].
+type Mention struct {
+	UserID, Phone string
+	Start, Length int64
+}
+
+func parseMentions(v any) []Mention {
+	items, _ := v.([]any)
+	var out []Mention
+	for _, item := range items {
+		m, ok := item.(pyjson.Object)
+		if !ok {
+			continue
+		}
+		mention := Mention{UserID: AsStr(m.Get("uid")), Phone: AsStr(m.Get("num")), Start: AsIntOr(m.Get("start"), 0), Length: AsIntOr(m.Get("length"), 0)}
+		if mention.UserID != "" || mention.Phone != "" {
+			out = append(out, mention)
+		}
+	}
+	return out
 }
 
 // IsDeletedForAll reports whether the message is known to be deleted for everyone.
@@ -489,6 +512,7 @@ func ParseMessage(p pyjson.Object, me string, meta pyjson.Object, chatID string)
 		msg.Text = inviteText(data)
 	default:
 		parseContent(msg, data)
+		msg.Mentions = parseMentions(data.Get("md"))
 	}
 
 	if reply := p.Obj("rd"); len(reply) > 0 {

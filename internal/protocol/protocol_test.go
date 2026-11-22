@@ -51,3 +51,12 @@ func TestIDsMayBeNumbers(t *testing.T) {
 		t.Fatalf("parsed %+v", msg)
 	}
 }
+
+func TestGroupMentions(t *testing.T) {
+	md := []any{pyjson.O("uid", "1", "num", "+919800000001", "start", 0.0, "length", 6.0), pyjson.O("start", 7.0), "junk"}
+	msg := ParseMessage(pyjson.O("t", "m", "f", "2", "to", "g9", "ts", 5.0, "d", pyjson.O("m", "@Vinay lunch?", "md", md)), "1", nil, "")
+	want := []Mention{{UserID: "1", Phone: "+919800000001", Start: 0, Length: 6}}
+	if msg.ChatID != "g9" || !reflect.DeepEqual(msg.Mentions, want) {
+		t.Fatalf("chat %q, mentions %+v; want g9, %+v", msg.ChatID, msg.Mentions, want)
+	}
+}

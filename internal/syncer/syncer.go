@@ -782,9 +782,19 @@ func (s *Syncer) printMessage(msg *protocol.Message) error {
 		}
 	}
 	text := protocol.Summary(msg.Kind, msg.Text, msg.FileName, msg.IsDeletedForAll())
+	chatType := "one_to_one"
+	if chat != nil && chat["type"] == "group" {
+		chatType = "group"
+	}
+	mentions := make([]pyjson.Object, 0, len(msg.Mentions))
+	mentionsMe := false
+	for _, m := range msg.Mentions {
+		mentions = append(mentions, pyjson.O("uid", nullable(m.UserID), "phone", nullable(m.Phone), "start", m.Start, "length", m.Length))
+		mentionsMe = mentionsMe || m.UserID == s.me
+	}
 	var line string
 	switch {
-	case chat != nil && chat["type"] == "group":
+	case chatType == "group":
 		line = fmt.Sprintf("%s  %s / %s: %s", FmtTime(msg.TS), chatName, sender, text)
 	case msg.FromMe:
 		line = fmt.Sprintf("%s  me -> %s: %s", FmtTime(msg.TS), chatName, text)
@@ -792,10 +802,10 @@ func (s *Syncer) printMessage(msg *protocol.Message) error {
 		line = fmt.Sprintf("%s  %s: %s", FmtTime(msg.TS), sender, text)
 	}
 	s.out.Line(line, "message",
-		"chat", msg.ChatID, "chat_name", chatName, "id", nullable(msg.ID()), "server_id", nullable(msg.ServerID),
+		"chat", msg.ChatID, "chat_name", chatName, "chat_type", chatType, "id", nullable(msg.ID()), "server_id", nullable(msg.ServerID),
 		"client_id", nullable(msg.ClientID), "sender", msg.SenderID, "sender_name", sender, "from_me", msg.FromMe,
 		"ts", msg.TS, "kind", msg.Kind, "text", nullable(msg.Text), "file_name", nullable(msg.FileName),
-		"reply_to", nullable(msg.ReplyToID))
+		"reply_to", nullable(msg.ReplyToID), "mentions", mentions, "mentions_me", mentionsMe)
 	return nil
 }
 

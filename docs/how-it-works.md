@@ -60,10 +60,12 @@ Packets are JSON with short keys:
 | `i` | Client message id (a UUID) |
 | `s` | Server message id, `seq:timestamp` |
 | `ts` | Epoch milliseconds |
-| `d` | Data, for example `m` text, `fid` file id, `fn` file name, `mime`, `s` size |
+| `d` | Data, for example `m` text, `fid` file id, `fn` file name, `mime`, `s` size, `md` @mentions |
 
 A one-to-one chat is identified by the other person's user id, a group by its group id.
 Receipts are cumulative: "read up to `seq`" covers every earlier message in that chat.
+Mentions are listed in `d.md` as `{uid, num, start, length}`: the user id, phone number and
+the position of the `@name` in the text.
 
 ## Version string
 

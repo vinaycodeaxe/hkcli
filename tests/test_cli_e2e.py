@@ -111,6 +111,8 @@ def test_sync_follow_stores_live_events(fake, store, cli, logged_in):
         assert fake.wait_for(lambda: len(fake.packets("bg")) > presence_before), "sync did not reconnect after the drop"
         fake.push({"t": "m", "st": "text", "f": PEER, "to": USER, "c": PEER, "i": str(uuid.uuid4()), "s": f"41:{ts + 9}", "ts": ts + 9,
                    "d": {"st": "text", "ts": ts + 9, "m": "still there?", "p": "still there?"}})
+        fake.push({"t": "m", "st": "text", "f": PEER, "to": GROUP, "i": str(uuid.uuid4()), "s": f"42:{ts + 10}", "ts": ts + 10,
+                   "d": {"st": "text", "ts": ts + 10, "m": "@Vinay lunch?", "md": [{"uid": USER, "num": "+919800000001", "start": 0, "length": 6}]}})
         out, err = proc.communicate(timeout=40)
     finally:
         proc.kill()
@@ -119,7 +121,10 @@ def test_sync_follow_stores_live_events(fake, store, cli, logged_in):
     kinds = [e["event"] for e in events]
     for expected in ("connected", "sync", "message", "reaction", "edit", "receipt", "stopped"):
         assert expected in kinds, (expected, kinds)
-    assert next(e for e in events if e["event"] == "message")["text"] == "are you there?"
+    first = next(e for e in events if e["event"] == "message")
+    assert (first["text"], first["chat_type"], first["mentions"], first["mentions_me"]) == ("are you there?", "one_to_one", [], False)
+    mention = next(e for e in events if e["event"] == "message" and e["chat"] == GROUP)
+    assert (mention["chat_type"], mention["mentions_me"], mention["mentions"][0]["uid"]) == ("group", True, USER)
     assert "disconnected" in kinds and kinds.count("connected") == 2
 
     assert fake.packets("fdr")[0] == {"t": "fdr", "f": USER, "to": PEER, "d": {"s": f"24:{T0 + 5000}"}, "ts": fake.packets("fdr")[0]["ts"]}

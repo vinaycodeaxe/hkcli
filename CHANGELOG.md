@@ -7,6 +7,11 @@ section for each tagged version into the GitHub release notes.
 
 ## [Unreleased]
 
+### Added
+
+- `sync --json` message events now include `chat_type` (`one_to_one` or `group`), the
+  message's @mentions (`mentions`) and `mentions_me`, for bots and the OpenClaw channel.
+
 ## [0.2.0] - 2026-11-22
 
 First public release of hkcli.

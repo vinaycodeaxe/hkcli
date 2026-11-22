@@ -52,7 +52,7 @@ event is one JSON object per line on stdout:
 | --- | --- |
 | `connected` | Connected to the relay |
 | `sync` | Catch-up finished (`contacts`, `chats`, `chats_fetched`, `messages`, `receipts`) |
-| `message` | New message (`chat`, `chat_name`, `id`, `sender`, `sender_name`, `from_me`, `ts`, `kind`, `text`, `file_name`, `reply_to`) |
+| `message` | New message (`chat`, `chat_name`, `chat_type` (`one_to_one` or `group`), `id`, `sender`, `sender_name`, `from_me`, `ts`, `kind`, `text`, `file_name`, `reply_to`, `mentions` (list of `uid`, `phone`, `start`, `length`), `mentions_me`) |
 | `receipt` | Your messages were delivered or read (`chat`, `by`, `state`, `up_to`) |
 | `reaction` | Someone reacted (`chat`, `target`, `user`, `emoji`; `emoji` is null when removed) |
 | `edit`, `delete` | A message was edited, or deleted for everyone |
