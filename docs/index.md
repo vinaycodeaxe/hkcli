@@ -21,7 +21,8 @@ terminal, shell scripts and AI agents such as [OpenClaw](openclaw.md).
 ## Pick your path
 
 - **Trying it.** Read [Install](install.md), then [Quickstart](quickstart.md).
-- **Using it from OpenClaw.** Read [OpenClaw](openclaw.md).
+- **Using it from OpenClaw.** Read [OpenClaw skill](openclaw.md) to let your agent use your
+  Hike, or [OpenClaw channel](openclaw-channel.md) to chat with your agent on Hike.
 - **Keeping history fresh.** Read [Sync](sync.md), including how to run it as a background service.
 - **Searching old chats.** Read [Messages](messages.md) and [History](history.md).
 - **Sending from scripts.** Read [Send](send.md).

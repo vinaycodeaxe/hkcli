@@ -22,8 +22,10 @@ metadata:
 
 Use `hkcli` when the user asks you to read, search or summarize their Hike chats,
 or to send someone a message or file on Hike.
-Hike is not an OpenClaw channel: nobody can chat with you over Hike and nothing arrives
-on its own. Only touch Hike when the user asks.
+This skill uses the Hike account hkcli is logged in to (by default the store `~/.hkcli`, usually
+the user's own account) and only touches Hike when the user asks. It is separate from the Hike
+channel plugin, through which people chat with you on your own Hike number; never point hkcli
+at that channel's store (`~/.openclaw/hike/...`).
 
 ## Safety
 

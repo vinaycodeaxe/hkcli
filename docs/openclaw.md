@@ -1,9 +1,9 @@
 ---
-title: OpenClaw
+title: OpenClaw skill
 description: "Let your OpenClaw agent read, search and send Hike messages through the hkcli skill."
 ---
 
-# OpenClaw
+# OpenClaw skill
 
 hkcli includes an [OpenClaw](https://openclaw.ai) skill, the same pattern OpenClaw uses
 with `wacli` for WhatsApp. The skill teaches your agent the hkcli commands, and the agent
@@ -16,8 +16,9 @@ With it, you can ask things like:
 - "Send Asha on Hike: running 10 minutes late." The agent shows the recipient and the text
   and waits for your OK before sending.
 
-Hike is not an OpenClaw channel. People cannot chat with your agent over Hike, and the agent
-only uses Hike when you ask.
+The skill only uses Hike when you ask, with the Hike account hkcli is logged in to (usually
+yours). To let people chat with your agent over Hike, the way OpenClaw's WhatsApp channel
+works, use the [OpenClaw channel](openclaw-channel.md) instead; you can have both.
 
 ## 1. Install hkcli on the Gateway machine
 

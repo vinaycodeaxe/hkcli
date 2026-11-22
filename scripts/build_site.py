@@ -44,7 +44,7 @@ FEATURES = ["Pair", "Sync", "Search", "Send", "Media", "Contacts", "Groups", "Hi
 DISCLAIMER = "hkcli is an independent project and is not affiliated with or endorsed by Hike Messenger Ltd."
 
 SECTIONS = [
-    ("Start", ["index.md", "install.md", "quickstart.md", "openclaw.md"]),
+    ("Start", ["index.md", "install.md", "quickstart.md", "openclaw.md", "openclaw-channel.md"]),
     ("Using hkcli", ["auth.md", "sync.md", "messages.md", "history.md", "send.md", "media.md", "contacts.md"]),
     ("Reference", ["commands.md", "store.md", "how-it-works.md", "troubleshooting.md", "release.md"]),
 ]

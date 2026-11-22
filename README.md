@@ -61,20 +61,33 @@ Full reference: [Commands](https://vinaycodeaxe.github.io/hkcli/commands.html).
 
 ## Use with OpenClaw
 
-hkcli ships an OpenClaw skill in [`skills/hkcli`](skills/hkcli/SKILL.md), like the `wacli`
-skill for WhatsApp. On the machine that runs your OpenClaw Gateway:
+Two ways, like WhatsApp in OpenClaw (you can use both):
+
+- **Skill**: your agent reads, searches and sends *your* Hike messages when you ask, like the
+  `wacli` skill. It ships in [`skills/hkcli`](skills/hkcli/SKILL.md).
+- **Channel**: people chat with your agent on Hike. The agent gets its own Hike number, linked
+  by QR code, like OpenClaw's WhatsApp channel. It is the plugin in
+  [`openclaw-plugin`](openclaw-plugin/README.md), `@vinaycodeaxe/hkcli-channel`.
+
+On the machine that runs your OpenClaw Gateway:
 
 ```bash
 go install github.com/vinaycodeaxe/hkcli/cmd/hkcli@latest   # or a release download
+
+# Skill
 hkcli auth                                                 # scan the QR with your phone
 openclaw skills install @vinaycodeaxe/hkcli --global       # from ClawHub
-# or, from a checkout of this repo:
-openclaw skills install ./skills/hkcli --global
+
+# Channel
+openclaw plugins install clawhub:@vinaycodeaxe/hkcli-channel
+openclaw config set channels.hike.enabled true
+openclaw channels login --channel hike                     # scan with the agent's Hike number
+openclaw gateway restart
 ```
 
-Then ask your agent things like "search my Hike chats for the lunch plan" or "send Asha on
-Hike: running 10 minutes late". The agent confirms before sending.
-Details: [OpenClaw guide](https://vinaycodeaxe.github.io/hkcli/openclaw.html).
+Then ask your agent things like "search my Hike chats for the lunch plan", or message the
+agent's Hike number. Details: [OpenClaw skill](https://vinaycodeaxe.github.io/hkcli/openclaw.html)
+and [OpenClaw channel](https://vinaycodeaxe.github.io/hkcli/openclaw-channel.html).
 
 ## Safety
 

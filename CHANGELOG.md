@@ -7,10 +7,21 @@ section for each tagged version into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-22
+
 ### Added
 
+- OpenClaw channel: a plugin, `@vinaycodeaxe/hkcli-channel` on ClawHub, lets people chat with an
+  OpenClaw agent on Hike, like OpenClaw's WhatsApp channel. The agent gets its own Hike number
+  (linked with `openclaw channels login --channel hike`), new people are approved with pairing
+  codes, and in groups the agent answers when @mentioned. See the OpenClaw channel page.
 - `sync --json` message events now include `chat_type` (`one_to_one` or `group`), the
   message's @mentions (`mentions`) and `mentions_me`, for bots and the OpenClaw channel.
+
+### Changed
+
+- The OpenClaw skill no longer tells the agent that Hike cannot be a channel, and keeps it away
+  from the channel's hkcli store.
 
 ## [0.2.0] - 2026-11-22
 

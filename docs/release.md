@@ -14,6 +14,8 @@ This page is for maintainers. Publishing is automated with GitHub Actions in
 | `pages.yml` | Pushes to `main` that change the docs | Builds the website and publishes it to GitHub Pages |
 | `release.yml` | Tags like `v0.2.0` | Tests, builds hkcli for 6 platforms, creates the GitHub release with downloads and checksums, and publishes the OpenClaw skill to ClawHub (through `clawhub.yml`) |
 | `clawhub.yml` | Each release, or by hand | Publishes the OpenClaw skill in `skills/hkcli` to ClawHub |
+| `plugin.yml` | Pushes and pull requests that touch the channel plugin | Builds and tests `openclaw-plugin/`, installs the packed plugin into OpenClaw, runs the end-to-end test against the fake Hike servers, and does a ClawHub dry run |
+| `plugin-publish.yml` | By hand | Publishes the channel plugin `@vinaycodeaxe/hkcli-channel` to ClawHub |
 
 `go install github.com/vinaycodeaxe/hkcli/cmd/hkcli@latest` needs no publishing step: the Go
 module proxy picks up each new tag from GitHub.
@@ -62,6 +64,19 @@ clawhub skill publish ./skills/hkcli --slug hkcli --name hkcli --categories comm
 ```
 
 Skills on ClawHub are distributed under MIT-0, whatever license the repository uses.
+
+## Publishing the channel plugin
+
+The OpenClaw channel plugin in `openclaw-plugin/` has its own version (in its `package.json`).
+To release it:
+
+1. Bump `version` in `openclaw-plugin/package.json` (and in `package-lock.json`), and update
+   `openclaw.build.openclawVersion` if you built against a newer OpenClaw.
+2. Push to `main` and wait for `plugin.yml` to pass.
+3. Open *Actions > plugin-publish > Run workflow* on `main`, untick *Preview only* and add a
+   short changelog.
+
+ClawHub checks every new version before it can be installed. The plugin is MIT licensed.
 
 ## Website
 
