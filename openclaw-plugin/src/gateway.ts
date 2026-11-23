@@ -5,6 +5,7 @@ import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract
 import { createAccountStatusSink, createChannelRunQueue } from "openclaw/plugin-sdk/channel-outbound";
 import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
+import { AccountRuns } from "./account-runs.ts";
 import { HIKE_CHANNEL_ID, hkcliCommandFor, isHikeAccountLinked, type ResolvedHikeAccount } from "./accounts.ts";
 import { loginCommand, logoutHikeAccount } from "./auth.ts";
 import { collectMissedDirectMessages, createHkcliCatchUpSource } from "./catch-up.ts";
@@ -25,9 +26,9 @@ import { getHikeRuntime } from "./runtime.ts";
 import { stopChild, superviseProcess, type SupervisedExit } from "./supervisor.ts";
 import { SyncProcessTracker, type SyncProcessRecord } from "./sync-process.ts";
 
-type ActiveAccount = { abort: AbortController; done: Promise<void> };
-
-const activeAccounts = new Map<string, ActiveAccount>();
+const accountRuns = new AccountRuns();
+/** A replaced run takes up to ~65 s to stop: replies in flight (60 s), then hkcli (5 s). */
+const PREVIOUS_RUN_WAIT_MS = 90_000;
 
 function createLog(ctx: ChannelGatewayContext<ResolvedHikeAccount>, core: PluginRuntime): HikeLog {
   if (ctx.log) {
@@ -97,6 +98,38 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
   const accountId = account.accountId;
   const core = getHikeRuntime();
   const log = createLog(ctx, core);
+  // Registered before this run reads or writes any state of the account, so a logout or the next
+  // start finds it and waits; the run it replaces is asked to stop and waited for first.
+  const run = accountRuns.begin(accountId);
+  const stopOnAbort = () => run.abort.abort();
+  ctx.abortSignal.addEventListener("abort", stopOnAbort, { once: true });
+  if (ctx.abortSignal.aborted) {
+    run.abort.abort();
+  }
+  try {
+    if (!(await run.previousStopped(PREVIOUS_RUN_WAIT_MS))) {
+      log.warn(
+        `hike: the previous run of account "${accountId}" is still stopping after ${PREVIOUS_RUN_WAIT_MS / 1000}s; starting anyway`,
+      );
+    }
+    if (run.abort.signal.aborted) {
+      return;
+    }
+    await runHikeAccount(ctx, core, log, run.abort);
+  } finally {
+    ctx.abortSignal.removeEventListener("abort", stopOnAbort);
+    run.finish();
+  }
+}
+
+async function runHikeAccount(
+  ctx: ChannelGatewayContext<ResolvedHikeAccount>,
+  core: PluginRuntime,
+  log: HikeLog,
+  abort: AbortController,
+): Promise<void> {
+  const { account } = ctx;
+  const accountId = account.accountId;
   const status = createAccountStatusSink({ accountId, setStatus: ctx.setStatus });
   const command = hkcliCommandFor(account);
   const blocked = (message: string) => {
@@ -115,7 +148,6 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
     return;
   }
 
-  const abort = new AbortController();
   const processes = await SyncProcessTracker.open({
     store: core.state.openKeyedStoreV2<SyncProcessRecord>({ namespace: "sync-process", maxEntries: 256 }),
     key: accountId,
@@ -128,11 +160,11 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
       account,
       command,
       log,
-      signal: ctx.abortSignal,
+      signal: abort.signal,
       isStopping: () => abort.signal.aborted,
     });
   } catch (error) {
-    if (ctx.abortSignal.aborted) {
+    if (abort.signal.aborted) {
       return;
     }
     const message = `could not load the inbound state of Hike account "${accountId}" (${String(error)}); retrying`;
@@ -173,18 +205,6 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
   });
   const tick = setInterval(() => flow.tick(), INBOUND_TICK_MS);
   tick.unref?.();
-
-  const stopOnAbort = () => abort.abort();
-  ctx.abortSignal.addEventListener("abort", stopOnAbort, { once: true });
-  if (ctx.abortSignal.aborted) {
-    abort.abort();
-  }
-  let finished: () => void = () => {};
-  const done = new Promise<void>((resolve) => {
-    finished = resolve;
-  });
-  activeAccounts.get(accountId)?.abort.abort();
-  activeAccounts.set(accountId, { abort, done });
 
   try {
     await superviseProcess({
@@ -275,20 +295,18 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
     });
   } finally {
     clearInterval(tick);
-    ctx.abortSignal.removeEventListener("abort", stopOnAbort);
     abort.abort();
     await flow.stop();
     await processes.release();
-    if (activeAccounts.get(accountId)?.abort === abort) {
-      activeAccounts.delete(accountId);
-    }
-    finished();
   }
 }
 
-/** Gateway logout: make sure this account's sync is stopped, then log hkcli out. */
+/**
+ * Gateway logout: stop this account's run and wait until it (and any run it was still waiting
+ * for) has stopped, so no reply or final save lands after the logout; then log hkcli out.
+ */
 export async function logoutHikeGatewayAccount(account: ResolvedHikeAccount) {
-  const active = activeAccounts.get(account.accountId);
+  const active = accountRuns.current(account.accountId);
   if (active) {
     active.abort.abort();
     await active.done;
