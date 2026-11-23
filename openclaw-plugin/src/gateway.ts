@@ -5,21 +5,30 @@ import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract
 import { createAccountStatusSink, createChannelRunQueue } from "openclaw/plugin-sdk/channel-outbound";
 import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
+import { AccountRuns } from "./account-runs.ts";
 import { HIKE_CHANNEL_ID, hkcliCommandFor, isHikeAccountLinked, type ResolvedHikeAccount } from "./accounts.ts";
 import { loginCommand, logoutHikeAccount } from "./auth.ts";
 import { collectMissedDirectMessages, createHkcliCatchUpSource } from "./catch-up.ts";
 import { parseSyncEvent } from "./events.ts";
-import { HKCLI_INSTALL_HINT, hkcliArgs, probeHkcliVersion, spawnHkcli } from "./hkcli.ts";
+import {
+  HKCLI_INSTALL_HINT,
+  hkcliArgs,
+  probeHkcliVersion,
+  readHkcliUserId,
+  spawnHkcli,
+  type HkcliCommand,
+} from "./hkcli.ts";
 import { INBOUND_TICK_MS, InboundFlow } from "./inbound-flow.ts";
-import { InboundGate, type InboundCursorState, type InboundCursorStore } from "./inbound-gate.ts";
+import { InboundGate } from "./inbound-gate.ts";
+import { applyLogoutMarker, openHikeCursorStore } from "./inbound-state.ts";
 import { createHikeInboundHandler, type HikeLog } from "./inbound.ts";
 import { getHikeRuntime } from "./runtime.ts";
 import { stopChild, superviseProcess, type SupervisedExit } from "./supervisor.ts";
 import { SyncProcessTracker, type SyncProcessRecord } from "./sync-process.ts";
 
-type ActiveAccount = { abort: AbortController; done: Promise<void> };
-
-const activeAccounts = new Map<string, ActiveAccount>();
+const accountRuns = new AccountRuns();
+/** A replaced run takes up to ~65 s to stop: replies in flight (60 s), then hkcli (5 s). */
+const PREVIOUS_RUN_WAIT_MS = 90_000;
 
 function createLog(ctx: ChannelGatewayContext<ResolvedHikeAccount>, core: PluginRuntime): HikeLog {
   if (ctx.log) {
@@ -34,14 +43,42 @@ function createLog(ctx: ChannelGatewayContext<ResolvedHikeAccount>, core: Plugin
   };
 }
 
-function cursorStore(core: PluginRuntime, accountId: string): InboundCursorStore {
-  const store = core.state.openKeyedStoreV2<InboundCursorState>({ namespace: "inbound-cursor", maxEntries: 256 });
-  return {
-    load: async () => await store.lookup(accountId),
-    save: async (state) => {
-      await store.register(accountId, state);
+/**
+ * The account's inbound gate, bound to the Hike user its store is logged in as. Errors are thrown
+ * so the start is retried; a guessed fresh cursor would skip what arrived while it was down.
+ */
+async function openAccountGate(params: {
+  core: PluginRuntime;
+  account: ResolvedHikeAccount;
+  command: HkcliCommand;
+  log: HikeLog;
+  signal: AbortSignal;
+  isStopping: () => boolean;
+}): Promise<InboundGate> {
+  const { core, account, log } = params;
+  const user = await readHkcliUserId(params.command, account.storeDir, { signal: params.signal });
+  const cursors = openHikeCursorStore(core, account.accountId);
+  if (await applyLogoutMarker(account.storeDir, cursors)) {
+    log.info(`hike: account "${account.accountId}" was logged out since it last ran; answering new messages only`);
+  }
+  return await InboundGate.open({
+    store: cursors,
+    user,
+    onUserChanged: (previous, current) => {
+      log.info(
+        `hike: account "${account.accountId}" is now linked to Hike user ${current} (was ${previous}); answering new messages only`,
+      );
     },
-  };
+    onError: (error) => {
+      // During Gateway shutdown plugin state closes first; the last successful save stands.
+      const message = `hike: could not save the inbound cursor: ${String(error)}`;
+      if (params.isStopping()) {
+        log.debug?.(message);
+      } else {
+        log.warn(message);
+      }
+    },
+  });
 }
 
 function lockHolderPid(message: string | undefined): number | undefined {
@@ -61,6 +98,38 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
   const accountId = account.accountId;
   const core = getHikeRuntime();
   const log = createLog(ctx, core);
+  // Registered before this run reads or writes any state of the account, so a logout or the next
+  // start finds it and waits; the run it replaces is asked to stop and waited for first.
+  const run = accountRuns.begin(accountId);
+  const stopOnAbort = () => run.abort.abort();
+  ctx.abortSignal.addEventListener("abort", stopOnAbort, { once: true });
+  if (ctx.abortSignal.aborted) {
+    run.abort.abort();
+  }
+  try {
+    if (!(await run.previousStopped(PREVIOUS_RUN_WAIT_MS))) {
+      log.warn(
+        `hike: the previous run of account "${accountId}" is still stopping after ${PREVIOUS_RUN_WAIT_MS / 1000}s; starting anyway`,
+      );
+    }
+    if (run.abort.signal.aborted) {
+      return;
+    }
+    await runHikeAccount(ctx, core, log, run.abort);
+  } finally {
+    ctx.abortSignal.removeEventListener("abort", stopOnAbort);
+    run.finish();
+  }
+}
+
+async function runHikeAccount(
+  ctx: ChannelGatewayContext<ResolvedHikeAccount>,
+  core: PluginRuntime,
+  log: HikeLog,
+  abort: AbortController,
+): Promise<void> {
+  const { account } = ctx;
+  const accountId = account.accountId;
   const status = createAccountStatusSink({ accountId, setStatus: ctx.setStatus });
   const command = hkcliCommandFor(account);
   const blocked = (message: string) => {
@@ -79,24 +148,31 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
     return;
   }
 
-  const abort = new AbortController();
   const processes = await SyncProcessTracker.open({
     store: core.state.openKeyedStoreV2<SyncProcessRecord>({ namespace: "sync-process", maxEntries: 256 }),
     key: accountId,
     storeDir: account.storeDir,
   });
-  const gate = await InboundGate.open({
-    store: cursorStore(core, accountId),
-    onError: (error) => {
-      // During Gateway shutdown plugin state closes first; the last successful save stands.
-      const message = `hike: could not save the inbound cursor: ${String(error)}`;
-      if (abort.signal.aborted) {
-        log.debug?.(message);
-      } else {
-        log.warn(message);
-      }
-    },
-  });
+  let gate: InboundGate;
+  try {
+    gate = await openAccountGate({
+      core,
+      account,
+      command,
+      log,
+      signal: abort.signal,
+      isStopping: () => abort.signal.aborted,
+    });
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return;
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    const message = `could not open the inbound state of Hike account "${accountId}" (${reason}); retrying`;
+    status({ connected: false, lifecycle: "recovering", lastError: message });
+    log.error(`hike: ${message}`);
+    throw error;
+  }
   const queue = createChannelRunQueue({
     setStatus: (patch) => status(patch),
     abortSignal: abort.signal,
@@ -130,18 +206,6 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
   });
   const tick = setInterval(() => flow.tick(), INBOUND_TICK_MS);
   tick.unref?.();
-
-  const stopOnAbort = () => abort.abort();
-  ctx.abortSignal.addEventListener("abort", stopOnAbort, { once: true });
-  if (ctx.abortSignal.aborted) {
-    abort.abort();
-  }
-  let finished: () => void = () => {};
-  const done = new Promise<void>((resolve) => {
-    finished = resolve;
-  });
-  activeAccounts.get(accountId)?.abort.abort();
-  activeAccounts.set(accountId, { abort, done });
 
   try {
     await superviseProcess({
@@ -232,20 +296,18 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
     });
   } finally {
     clearInterval(tick);
-    ctx.abortSignal.removeEventListener("abort", stopOnAbort);
     abort.abort();
     await flow.stop();
     await processes.release();
-    if (activeAccounts.get(accountId)?.abort === abort) {
-      activeAccounts.delete(accountId);
-    }
-    finished();
   }
 }
 
-/** Gateway logout: make sure this account's sync is stopped, then log hkcli out. */
+/**
+ * Gateway logout: stop this account's run and wait until it (and any run it was still waiting
+ * for) has stopped, so no reply or final save lands after the logout; then log hkcli out.
+ */
 export async function logoutHikeGatewayAccount(account: ResolvedHikeAccount) {
-  const active = activeAccounts.get(account.accountId);
+  const active = accountRuns.current(account.accountId);
   if (active) {
     active.abort.abort();
     await active.done;

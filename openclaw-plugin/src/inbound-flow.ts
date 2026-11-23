@@ -27,6 +27,8 @@ export type InboundFlowOptions = {
   /** Milliseconds from a monotonic clock (default `performance.now()`). */
   monotonicNow?: () => number;
   tickIntervalMs?: number;
+  /** How long `stop()` waits for messages that are already being handled. */
+  stopTimeoutMs?: number;
 };
 
 export class InboundFlow {
@@ -34,6 +36,7 @@ export class InboundFlow {
   private readonly now: () => number;
   private readonly monotonicNow: () => number;
   private readonly tickIntervalMs: number;
+  private readonly stopTimeoutMs: number;
   /** hkcli finished its catch-up and is receiving live events. */
   private live = false;
   /** The next sync event reads the store back: a new hkcli process, or a gap in the clock. */
@@ -45,12 +48,15 @@ export class InboundFlow {
   private lastTick: { wall: number; mono: number };
   /** The latest tick time seen while connected; the cursor never moves past it. */
   private confirmedAt: number;
+  /** Messages whose handling already started (queued ones are dropped on stop). */
+  private readonly running = new Set<Promise<void>>();
 
   constructor(options: InboundFlowOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
     this.monotonicNow = options.monotonicNow ?? (() => performance.now());
     this.tickIntervalMs = options.tickIntervalMs ?? INBOUND_TICK_MS;
+    this.stopTimeoutMs = options.stopTimeoutMs ?? 60_000;
     this.lastTick = { wall: this.now(), mono: this.monotonicNow() };
     this.confirmedAt = options.gate.cursorValue;
   }
@@ -115,10 +121,33 @@ export class InboundFlow {
     this.step();
   }
 
-  /** After the abort: waits for a read-back in flight and saves what was already recorded. */
+  /**
+   * After the abort: waits for a read-back in flight and, for up to `stopTimeoutMs`, for messages
+   * already being handled (so a logout cannot race their replies), then saves what was recorded.
+   */
   async stop(): Promise<void> {
     await this.recovery;
+    await this.drain();
     await this.options.gate.flush();
+  }
+
+  private async drain(): Promise<void> {
+    if (this.running.size === 0) {
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finished = await Promise.race([
+      Promise.allSettled([...this.running]).then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), this.stopTimeoutMs);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!finished) {
+      this.options.log.warn(
+        `hike: stopping with ${this.running.size} inbound message(s) still being handled after ${Math.round(this.stopTimeoutMs / 1000)}s`,
+      );
+    }
   }
 
   private step(): void {
@@ -179,7 +208,7 @@ export class InboundFlow {
   }
 
   private admit(message: HikeInboundMessage, bound?: number): void {
-    const { gate, schedule, handle, signal, log } = this.options;
+    const { gate, schedule, log } = this.options;
     const decision = gate.check(message, bound);
     if (decision !== "accept") {
       if (decision === "stale") {
@@ -190,15 +219,26 @@ export class InboundFlow {
       return;
     }
     schedule(`${message.chatType}:${message.chatId}`, async () => {
-      const commit = () => gate.commit(message.id);
+      const run = this.handle(message);
+      this.running.add(run);
       try {
-        await handle(message, commit);
+        await run;
       } finally {
-        // Dropped by policy (or failed) without a side effect: still handled, never retried.
-        if (!signal.aborted) {
-          await commit();
-        }
+        this.running.delete(run);
       }
     });
+  }
+
+  private async handle(message: HikeInboundMessage): Promise<void> {
+    const { gate, handle, signal } = this.options;
+    const commit = () => gate.commit(message.id);
+    try {
+      await handle(message, commit);
+    } finally {
+      // Dropped by policy (or failed) without a side effect: still handled, never retried.
+      if (!signal.aborted) {
+        await commit();
+      }
+    }
   }
 }

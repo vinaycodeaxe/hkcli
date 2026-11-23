@@ -1,6 +1,6 @@
 // Needs the openclaw package (installed in CI): config schema, accounts, plugin shape, outbound.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import { hikePairingReply } from "../../src/inbound.ts";
 import entry from "../../src/index.ts";
 import { sendHikeText } from "../../src/outbound.ts";
 import { resolveHikeGroupMatch, resolveHikeGroupRequireMention } from "../../src/policy.ts";
+import { clearHikeRuntime, setHikeRuntime } from "../../src/runtime.ts";
 import setupEntry from "../../src/setup-entry.ts";
 import { scratchDir } from "../helpers.ts";
 
@@ -225,5 +226,23 @@ describe("outbound", () => {
       assert.equal(error instanceof PlatformMessageNotDispatchedError, false);
       return true;
     });
+  });
+
+  it("forgets the inbound cursor on logout, from the gateway and the setup plugin", async () => {
+    const deleted: string[] = [];
+    const store = { delete: async (key: string) => void deleted.push(key) };
+    setHikeRuntime({ state: { openKeyedStoreV2: () => store } } as never);
+    const params = { cfg: cfg({}), accountId: "default", account, runtime: {} as never };
+    try {
+      assert.equal((await hikePlugin.gateway?.logoutAccount?.(params))?.cleared, true);
+      assert.equal((await setupEntry.plugin.gateway?.logoutAccount?.(params))?.cleared, true);
+      assert.deepEqual(deleted, ["default", "default"]);
+    } finally {
+      clearHikeRuntime();
+    }
+
+    // Setup-only loads give the plugin no state access: the next start drops the cursor instead.
+    await setupEntry.plugin.gateway?.logoutAccount?.(params);
+    assert.deepEqual(readdirSync(account.storeDir), [".openclaw-hike-logged-out"]);
   });
 });

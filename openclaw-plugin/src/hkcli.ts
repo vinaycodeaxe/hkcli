@@ -106,6 +106,8 @@ export const hkcliArgs = {
 export class NdjsonDecoder {
   private readonly decoder = new StringDecoder("utf8");
   private buffer = "";
+  /** The current line already went over the limit: drop it up to its newline. */
+  private skipping = false;
   private readonly onValue: (value: unknown) => void;
   private readonly onMalformed: (bytes: number) => void;
   private readonly maxLineChars: number;
@@ -126,11 +128,18 @@ export class NdjsonDecoder {
     while (newline >= 0) {
       const line = this.buffer.slice(0, newline);
       this.buffer = this.buffer.slice(newline + 1);
-      this.emit(line);
+      if (this.skipping) {
+        this.skipping = false;
+      } else {
+        this.emit(line);
+      }
       newline = this.buffer.indexOf("\n");
     }
     if (this.buffer.length > this.maxLineChars) {
-      this.onMalformed(Buffer.byteLength(this.buffer));
+      if (!this.skipping) {
+        this.onMalformed(Buffer.byteLength(this.buffer));
+      }
+      this.skipping = true;
       this.buffer = "";
     }
   }
@@ -139,10 +148,17 @@ export class NdjsonDecoder {
     this.buffer += this.decoder.end();
     const rest = this.buffer;
     this.buffer = "";
-    this.emit(rest);
+    if (!this.skipping) {
+      this.emit(rest);
+    }
+    this.skipping = false;
   }
 
   private emit(raw: string): void {
+    if (raw.length > this.maxLineChars) {
+      this.onMalformed(Buffer.byteLength(raw));
+      return;
+    }
     const line = raw.trim();
     if (!line) {
       return;
@@ -383,6 +399,25 @@ export function expectEnvelopeData(run: HkcliRunResult, what: string): unknown {
       ? "aborted"
       : `exit ${String(run.exitCode ?? run.signal)}`;
   throw new HkcliCommandError(`${what}: no result from hkcli (${reason})`, "no_result", run.exitCode);
+}
+
+/** Hike user id of the login saved in the store, from the local `auth status` (no network). */
+export async function readHkcliUserId(
+  command: HkcliCommand,
+  storeDir: string,
+  options: { timeoutMs?: number; signal?: AbortSignal; env?: NodeJS.ProcessEnv } = {},
+): Promise<string> {
+  const run = await runHkcli(command, hkcliArgs.authStatus(storeDir, false), {
+    timeoutMs: options.timeoutMs ?? 15_000,
+    signal: options.signal,
+    env: options.env,
+  });
+  const data = expectEnvelopeData(run, "hkcli auth status");
+  const userId = isRecord(data) && typeof data.user_id === "string" ? data.user_id.trim() : "";
+  if (!userId) {
+    throw new HkcliCommandError("hkcli auth status: no Hike login is saved in this store", "not_logged_in", run.exitCode);
+  }
+  return userId;
 }
 
 /** hkcli error codes that prove nothing was published to Hike. */

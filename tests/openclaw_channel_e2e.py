@@ -22,6 +22,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -124,13 +125,23 @@ def is_running(pid: int) -> bool:
         return False
 
 
-def hkcli_sync_processes(hkcli: str) -> list[tuple[int, str]]:
-    proc = subprocess.run(["pgrep", "-af", hkcli], capture_output=True, text=True)
+def hkcli_sync_processes(hkcli: str, store: Path) -> list[tuple[int, list[str]]]:
+    """`hkcli sync` processes on this test's store, matched on their exact argv (paths may contain
+    spaces, and other runs may use the same binary)."""
     found = []
-    for line in proc.stdout.splitlines():
-        pid, _, cmd = line.partition(" ")
-        if cmd.startswith(hkcli) and " sync" in cmd:
-            found.append((int(pid), cmd))
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        args = [arg.decode(errors="surrogateescape") for arg in raw.split(b"\0")]
+        if args and args[-1] == "":
+            args.pop()
+        on_store = any(a == "--store" and b == str(store) for a, b in zip(args, args[1:]))
+        if args and args[0] == hkcli and on_store and "sync" in args[1:]:
+            found.append((int(entry.name), args))
     return found
 
 
@@ -151,9 +162,9 @@ def stop_gateway(gateway: subprocess.Popen) -> None:
         raise SystemExit("gateway did not stop within 90s of SIGTERM")
 
 
-def crash_gateway(gateway: subprocess.Popen, hkcli: str) -> int:
+def crash_gateway(gateway: subprocess.Popen, hkcli: str, store: Path) -> int:
     """SIGKILL every Gateway process except its hkcli sync, like an OOM kill. Returns the sync's pid."""
-    syncs = hkcli_sync_processes(hkcli)
+    syncs = hkcli_sync_processes(hkcli, store)
     if len(syncs) != 1:
         raise SystemExit(f"expected one hkcli sync, found {syncs}")
     orphan = syncs[0][0]
@@ -189,10 +200,13 @@ def main() -> int:
     plugin = str(Path(args.plugin).resolve())
     openclaw = shutil.which("openclaw") or "openclaw"
 
-    work = Path(tempfile.mkdtemp(prefix="hike-e2e-", dir=args.workdir))
+    workdir = Path(args.workdir).absolute()
+    workdir.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="hike-e2e-", dir=workdir))
     state, home = work / "state", work / "home"
     state.mkdir()
     home.mkdir()
+    store = state / "hike" / "default"
     fake = FakeHike().start()
     env = {
         **os.environ,
@@ -220,10 +234,10 @@ def main() -> int:
         run([openclaw, "config", "set", "channels.hike.groups", json.dumps({GROUP: {"allowFrom": ["*"]}}), "--strict-json"], env)
 
         run([openclaw, "channels", "login", "--channel", "hike"], env, timeout=180)
-        session = state / "hike" / "default" / "session.json"
+        session = store / "session.json"
         if not session.is_file():
             raise SystemExit(f"login did not create {session}")
-        log(f"linked; store {session.parent}")
+        log(f"linked; store {store}")
 
         connects_before = len(fake.mqtt_connects)
         gateway_log = work / "gateway.log"
@@ -277,7 +291,7 @@ def main() -> int:
 
         # A Gateway that dies hard leaves its hkcli sync holding the store; the next run stops it.
         time.sleep(3)
-        orphan = crash_gateway(gateway, hkcli)
+        orphan = crash_gateway(gateway, hkcli, store)
         time.sleep(2)
         if not is_running(orphan):
             raise SystemExit("hkcli sync did not outlive the killed Gateway")
@@ -299,12 +313,12 @@ def main() -> int:
         # A DM that hkcli stores while the channel is down is answered after a restart, even though
         # hkcli's next catch-up then has nothing new to fetch.
         stop_gateway(gateway)
-        wait_for(lambda: not hkcli_sync_processes(hkcli), 30, "hkcli sync to stop with the Gateway")
+        wait_for(lambda: not hkcli_sync_processes(hkcli, store), 30, "hkcli sync to stop with the Gateway")
         if processed(gateway_log, NEW_PEER):
             raise SystemExit(f"DMs answered before the crash reached the agent again: {processed(gateway_log, NEW_PEER)}")
         known = relay_sessions(fake)
         standalone = subprocess.Popen(
-            [hkcli, "--store", str(session.parent), "--json", "sync", "--idle-exit", "8"],
+            [hkcli, "--store", str(store), "--json", "sync", "--idle-exit", "8"],
             env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         wait_for(lambda: standalone.poll() is not None or new_relay_session(fake, known), 60, "a standalone hkcli sync to connect")
@@ -340,7 +354,7 @@ def main() -> int:
             raise SystemExit("logout left session.json behind")
         if not fake.logout_requests:
             raise SystemExit("logout did not sign the device out of Hike")
-        wait_for(lambda: not hkcli_sync_processes(hkcli), 30, "hkcli sync to stop after logout")
+        wait_for(lambda: not hkcli_sync_processes(hkcli, store), 30, "hkcli sync to stop after logout")
         log("logout stopped the account and signed out of Hike")
     except BaseException as error:  # noqa: BLE001 - report every failure after cleanup
         failure = error
@@ -354,14 +368,14 @@ def main() -> int:
                 failure = failure or error
         if gateway is not None:
             time.sleep(1)
-            leftovers = hkcli_sync_processes(hkcli)
+            leftovers = hkcli_sync_processes(hkcli, store)
             for pid, _ in leftovers:
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
             if leftovers:
-                listing = "\n".join(f"{pid} {cmd}" for pid, cmd in leftovers)
+                listing = "\n".join(f"{pid} {shlex.join(args)}" for pid, args in leftovers)
                 log(f"hkcli left running after the Gateway stopped:\n{listing}")
                 failure = failure or SystemExit("hkcli sync was left running after the Gateway stopped")
             else:

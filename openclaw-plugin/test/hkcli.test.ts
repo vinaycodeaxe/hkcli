@@ -12,6 +12,7 @@ import {
   parseEnvelope,
   parseHkcliVersion,
   probeHkcliVersion,
+  readHkcliUserId,
   sendHkcliText,
 } from "../src/hkcli.ts";
 import { fakeEnv, fakeHkcli, missingHkcli, scratchDir } from "./helpers.ts";
@@ -58,6 +59,32 @@ describe("hkcli arguments", () => {
   });
 });
 
+describe("readHkcliUserId", () => {
+  it("reads the linked Hike user from the local auth status", async () => {
+    const scratch = scratchDir();
+    try {
+      const log = path.join(scratch.dir, "calls.ndjson");
+      assert.equal(await readHkcliUserId(fakeHkcli, "s", { env: fakeEnv({ FAKE_HKCLI_LOG: log, FAKE_HKCLI_USER: "2009" }) }), "2009");
+      const [call] = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      // Local only: `--check` would ask Hike.
+      assert.deepEqual(call.args, ["--store", "s", "--json", "auth", "status"]);
+    } finally {
+      scratch.cleanup();
+    }
+  });
+
+  it("fails when no login is saved or hkcli cannot answer", async () => {
+    await assert.rejects(readHkcliUserId(fakeHkcli, "s", { env: fakeEnv({ FAKE_HKCLI_USER: "none" }) }), /no Hike login/);
+    await assert.rejects(
+      readHkcliUserId(fakeHkcli, "s", { env: fakeEnv({ FAKE_HKCLI_AUTH_STATUS: "fail" }) }),
+      /could not open the store/,
+    );
+  });
+});
+
 describe("NdjsonDecoder", () => {
   function collect() {
     const values: unknown[] = [];
@@ -92,6 +119,20 @@ describe("NdjsonDecoder", () => {
     assert.deepEqual(values, [{ ok: true }, { after: 1 }]);
     assert.equal(malformed.length, 2);
     assert.equal(malformed[0], 8);
+  });
+
+  it("applies the line limit to complete lines too, and reports a long line once", () => {
+    const { values, malformed, decoder } = collect();
+    const big = JSON.stringify({ text: "y".repeat(100) });
+    decoder.push(`${big}\n{"next":1}\n`);
+    assert.deepEqual(values, [{ next: 1 }]);
+    assert.deepEqual(malformed, [big.length]);
+
+    decoder.push(`{"text":"${"z".repeat(70)}`);
+    decoder.push(`${"z".repeat(70)}`);
+    decoder.push('"}\n{"after":2}\n');
+    assert.deepEqual(values, [{ next: 1 }, { after: 2 }]);
+    assert.equal(malformed.length, 2);
   });
 });
 

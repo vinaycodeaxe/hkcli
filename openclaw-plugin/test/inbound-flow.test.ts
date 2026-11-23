@@ -41,6 +41,7 @@ function elapse(world: World, ms: number): void {
 type RunOptions = {
   readBack?: (since: number, signal: AbortSignal) => Promise<CatchUpResult>;
   handle?: (message: HikeInboundMessage, commit: InboundCommit) => Promise<void>;
+  stopTimeoutMs?: number;
 };
 
 /** One account run wired like the gateway, with a per-chat queue that skips work after a stop. */
@@ -94,6 +95,7 @@ async function startRun(world: World, options: RunOptions = {}) {
     log: { info: () => {}, warn: (line) => warnings.push(line) },
     now: clock,
     monotonicNow: () => world.mono,
+    ...(options.stopTimeoutMs === undefined ? {} : { stopTimeoutMs: options.stopTimeoutMs }),
   });
   const settle = async () => {
     for (let turn = 0; turn < 5; turn += 1) {
@@ -106,7 +108,7 @@ async function startRun(world: World, options: RunOptions = {}) {
     await settle();
     await flow.stop();
   };
-  return { gate, flow, handled, reads, warnings, restarts, settle, stop };
+  return { gate, flow, abort, handled, reads, warnings, restarts, settle, stop };
 }
 
 describe("InboundFlow", () => {
@@ -354,5 +356,50 @@ describe("InboundFlow", () => {
     assert.equal(run.gate.cursorValue, confirmed);
     await run.stop();
     assert.equal(world.state?.cursor, confirmed);
+  });
+
+  it("lets replies already under way finish before it stops, for a bounded time", async () => {
+    const world: World = { now: NOW, mono: 0, stored: [] };
+    let finish: () => void = () => {};
+    const replying = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const sent: string[] = [];
+    const run = await startRun(world, {
+      handle: async (inbound, commit) => {
+        await commit();
+        await replying;
+        sent.push(inbound.id);
+      },
+    });
+    run.flow.childStarted();
+    run.flow.synced(0);
+    await run.settle();
+    run.flow.received(message("a", NOW));
+    run.flow.received(message("b", NOW + 1));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // A logout stops the account: "a" is being answered, "b" only queued.
+    run.abort.abort();
+    let stopped = false;
+    const stopping = run.flow.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(stopped, false);
+    finish();
+    await stopping;
+    assert.deepEqual(sent, ["a"]);
+    assert.deepEqual(run.warnings, []);
+
+    const stuck = await startRun(world, { handle: async () => await new Promise<void>(() => {}), stopTimeoutMs: 20 });
+    stuck.flow.childStarted();
+    stuck.flow.synced(0);
+    await stuck.settle();
+    stuck.flow.received(message("c", NOW + 2));
+    await new Promise((resolve) => setImmediate(resolve));
+    stuck.abort.abort();
+    await stuck.flow.stop();
+    assert.match(stuck.warnings.join("\n"), /1 inbound message\(s\) still being handled/);
   });
 });

@@ -92,6 +92,26 @@ if (command === "messages list") {
   process.exit(0);
 }
 
+if (command === "auth status") {
+  log({ command, args });
+  if (env.FAKE_HKCLI_AUTH_STATUS === "fail") {
+    fail("internal", "could not open the store");
+  }
+  const user = env.FAKE_HKCLI_USER === "none" ? "" : (env.FAKE_HKCLI_USER ?? "1001");
+  print({
+    success: true,
+    data: { logged_in: Boolean(user), user_id: user || null, name: user ? "Me" : null, store: option("--store") },
+    error: null,
+  });
+  process.exit(0);
+}
+
+if (command === "auth logout") {
+  log({ command, store: option("--store") });
+  print({ success: true, data: { logged_out: true, server_logout: "ok" }, error: null });
+  process.exit(0);
+}
+
 if (command === "sync") {
   const mode = env.FAKE_HKCLI_SYNC ?? "events";
   log({ command, pid: process.pid });
@@ -106,18 +126,20 @@ if (command === "sync") {
     process.exit(1);
   }
   print({ event: "sync", contacts: 0, chats: 1, chats_fetched: 1, messages: 0, receipts: 0 });
+  // A fixed old timestamp by default; "now" makes the DM fresh enough to be answered.
+  const ts = env.FAKE_HKCLI_SYNC_TS === "now" ? Date.now() : 1760000060000;
   const message = JSON.stringify({
     event: "message",
     chat: "2002",
     chat_name: "Asha",
     chat_type: "one_to_one",
-    id: "40:1760000060000",
-    server_id: "40:1760000060000",
+    id: `40:${ts}`,
+    server_id: `40:${ts}`,
     client_id: "c-40",
     sender: "2002",
     sender_name: "Asha",
     from_me: false,
-    ts: 1760000060000,
+    ts,
     kind: "text",
     text: "héllo 👋",
     file_name: null,

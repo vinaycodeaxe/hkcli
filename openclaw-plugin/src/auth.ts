@@ -14,6 +14,8 @@ import {
   spawnHkcli,
 } from "./hkcli.ts";
 import { hkcliCommandFor, isHikeAccountLinked, type ResolvedHikeAccount } from "./accounts.ts";
+import { forgetHikeCursor } from "./inbound-state.ts";
+import { getOptionalHikeRuntime } from "./runtime.ts";
 
 export type HikeProbe = {
   ok: boolean;
@@ -113,6 +115,8 @@ export async function logoutHikeAccount(
     timeoutMs: 60_000,
   });
   const data = expectEnvelopeData(run, "hkcli auth logout");
+  // Whichever number is linked next must not inherit where this one stopped.
+  await forgetHikeCursor(getOptionalHikeRuntime(), account);
   const record = isRecord(data) ? data : {};
   const cleared = record.logged_out === true;
   const serverLogout = text(record.server_logout);
