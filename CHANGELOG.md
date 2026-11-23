@@ -7,6 +7,20 @@ section for each tagged version into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-23
+
+### Changed
+
+- Updated dependencies, including the SQLite driver (modernc.org/sqlite 1.63.0, SQLite 3.54.1)
+  and golang.org/x/sys 0.50.0. Building from source now needs Go 1.26 or newer, the oldest Go
+  release still supported; `go install` downloads it automatically when needed. Release
+  downloads are unaffected.
+
+### Security
+
+- Includes the fix for GO-2026-5024 in golang.org/x/sys (Windows only). hkcli did not call the
+  affected function.
+
 ## [0.3.0] - 2026-11-22
 
 ### Added

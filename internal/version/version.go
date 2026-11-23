@@ -3,4 +3,4 @@ package version
 
 // Version is overridden at build time with
 // -ldflags "-X github.com/vinaycodeaxe/hkcli/internal/version.Version=...".
-var Version = "0.3.0"
+var Version = "0.3.1"

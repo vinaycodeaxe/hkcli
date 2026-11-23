@@ -28,6 +28,11 @@ on:
       - ".github/workflows/plugin.yml"
       - ".github/workflows/plugin-publish.yml"
   workflow_dispatch:
+    inputs:
+      openclaw_version:
+        description: OpenClaw version for the install and end-to-end jobs (empty = the plugin's build version)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -103,9 +108,11 @@ jobs:
 
       - name: Install the pinned OpenClaw
         working-directory: openclaw-plugin
+        env:
+          REQUESTED_VERSION: ${{ inputs.openclaw_version }}
         run: |
           set -euo pipefail
-          version=$(node -p 'require("./package.json").openclaw.build.openclawVersion')
+          version="${REQUESTED_VERSION:-$(node -p 'require("./package.json").openclaw.build.openclawVersion')}"
           npm install --global --no-audit --no-fund "openclaw@${version}"
           openclaw --version
 
@@ -170,11 +177,14 @@ jobs:
         run: go build -o "$RUNNER_TEMP/bin/hkcli" ./cmd/hkcli
 
       - name: Install test tools
+        env:
+          REQUESTED_VERSION: ${{ inputs.openclaw_version }}
         run: |
           set -euo pipefail
           python -m pip install -r requirements-dev.txt
-          version=$(node -p 'require("./openclaw-plugin/package.json").openclaw.build.openclawVersion')
+          version="${REQUESTED_VERSION:-$(node -p 'require("./openclaw-plugin/package.json").openclaw.build.openclawVersion')}"
           npm install --global --no-audit --no-fund "openclaw@${version}"
+          openclaw --version
 
       - name: Download package
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
