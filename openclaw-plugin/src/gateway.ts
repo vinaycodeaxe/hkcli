@@ -167,7 +167,8 @@ async function runHikeAccount(
     if (abort.signal.aborted) {
       return;
     }
-    const message = `could not load the inbound state of Hike account "${accountId}" (${String(error)}); retrying`;
+    const reason = error instanceof Error ? error.message : String(error);
+    const message = `could not open the inbound state of Hike account "${accountId}" (${reason}); retrying`;
     status({ connected: false, lifecycle: "recovering", lastError: message });
     log.error(`hike: ${message}`);
     throw error;

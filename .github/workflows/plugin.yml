@@ -183,7 +183,8 @@ jobs:
           path: ${{ runner.temp }}/pack
 
       - name: Pairing, groups and restarts over a real Gateway
-        run: python tests/openclaw_channel_e2e.py --hkcli "$RUNNER_TEMP/bin/hkcli" --plugin "$(ls "$RUNNER_TEMP"/pack/*.tgz)"
+        # The work dir has a space: store paths must survive it end to end.
+        run: python tests/openclaw_channel_e2e.py --hkcli "$RUNNER_TEMP/bin/hkcli" --plugin "$(ls "$RUNNER_TEMP"/pack/*.tgz)" --workdir "$RUNNER_TEMP/hike e2e"
 
   clawhub-dry-run:
     name: ClawHub dry run

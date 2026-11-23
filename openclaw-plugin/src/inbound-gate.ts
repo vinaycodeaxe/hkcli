@@ -50,6 +50,10 @@ function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function readState(value: unknown): LoadedState | undefined {
   if (typeof value !== "object" || value === null) {
     return undefined;
@@ -128,17 +132,31 @@ export class InboundGate {
   /**
    * Loads the saved state. A failed lookup is thrown: starting from a fresh cursor instead would
    * drop every message that arrived while the account was down. Unreadable state, or state of
-   * another Hike user, starts from now like a first run.
+   * another Hike user, starts from now like a first run, and that new state must be saved before
+   * the gate opens: until it is, a restart would start from "now" again and skip the downtime.
    */
   static async open(options: InboundGateOptions): Promise<InboundGate> {
-    let state = readState(await options.store.load());
+    let state: LoadedState | undefined;
+    try {
+      state = readState(await options.store.load());
+    } catch (error) {
+      throw new Error(`could not read the saved inbound cursor: ${errorText(error)}`, { cause: error });
+    }
     const { user } = options;
     if (state?.user !== undefined && user !== undefined && state.user !== user) {
       options.onUserChanged?.(state.user, user);
       state = undefined;
     }
     const gate = new InboundGate(options, state);
-    if (gate.dirty) {
+    if (!state) {
+      gate.dirty = false;
+      try {
+        await options.store.save(gate.snapshot());
+      } catch (error) {
+        throw new Error(`could not save the new inbound cursor: ${errorText(error)}`, { cause: error });
+      }
+    } else if (gate.dirty) {
+      // Adopting state saved before users were recorded: a failed save loses nothing.
       await gate.flush();
     }
     return gate;

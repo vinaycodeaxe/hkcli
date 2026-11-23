@@ -285,24 +285,57 @@ describe("InboundGate", () => {
         saves += 1;
       },
     };
-    await assert.rejects(InboundGate.open({ store: unreachable, now: () => NOW }), /plugin state is closed/);
+    await assert.rejects(
+      InboundGate.open({ store: unreachable, now: () => NOW }),
+      /could not read the saved inbound cursor: plugin state is closed/,
+    );
     assert.equal(saves, 0);
   });
 
-  it("starts over on unreadable state and reports failed saves without throwing", async () => {
-    const errors: unknown[] = [];
-    const failing: InboundCursorStore = {
-      load: async () => ({ v: 7 }),
-      save: async () => {
-        throw new Error("save failed");
+  it("does not open until a new or reset state is saved; later failed saves are only reported", async () => {
+    let failing = true;
+    const attempts: InboundCursorState[] = [];
+    const store = (saved: unknown): InboundCursorStore => ({
+      load: async () => saved,
+      save: async (state) => {
+        attempts.push(structuredClone(state));
+        if (failing) {
+          throw new Error("save failed");
+        }
       },
-    };
-    const gate = await InboundGate.open({ store: failing, now: () => NOW, onError: (error) => errors.push(error) });
-    assert.equal(gate.cursorValue, NOW);
-    assert.equal(gate.liveFloor, NOW - GRACE);
+    });
+    // A first run, unreadable state and a relinked number all start from now: until that is
+    // saved, a restart would move "now" again and skip whatever arrived meanwhile.
+    for (const saved of [undefined, { v: 7 }, { v: 2, user: "1001", cursor: NOW - HOUR, seen: [] }]) {
+      await assert.rejects(
+        InboundGate.open({ store: store(saved), now: () => NOW, user: "2002" }),
+        /could not save the new inbound cursor: save failed/,
+      );
+    }
+    assert.deepEqual(
+      attempts.map((state) => [state.user, state.cursor]),
+      [
+        ["2002", NOW],
+        ["2002", NOW],
+        ["2002", NOW],
+      ],
+    );
+
+    // Adopting state saved before users were recorded loses nothing if that save fails.
+    const errors: unknown[] = [];
+    const legacy = { v: 2, cursor: NOW - HOUR, seen: [] };
+    const adopted = await InboundGate.open({ store: store(legacy), now: () => NOW, user: "1001", onError: (e) => errors.push(e) });
+    assert.equal(adopted.cursorValue, NOW - HOUR);
     assert.equal(errors.length, 1);
-    gate.check(dm("x", NOW));
+
+    // Once the new state is saved, a failed save is reported and the gate keeps going.
+    failing = false;
+    const gate = await InboundGate.open({ store: store({ v: 7 }), now: () => NOW, onError: (e) => errors.push(e) });
+    assert.equal(gate.cursorValue, NOW);
+    failing = true;
+    assert.equal(gate.check(dm("x", NOW)), "accept");
     assert.equal(await gate.commit("x"), false);
     assert.equal(errors.length, 2);
+    assert.equal(gate.check(dm("y", NOW)), "accept");
   });
 });

@@ -22,6 +22,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -124,16 +125,23 @@ def is_running(pid: int) -> bool:
         return False
 
 
-def hkcli_sync_processes(hkcli: str, store: Path) -> list[tuple[int, str]]:
-    """`hkcli sync` processes on this test's store; other runs may use the same binary."""
-    proc = subprocess.run(["pgrep", "-af", hkcli], capture_output=True, text=True)
+def hkcli_sync_processes(hkcli: str, store: Path) -> list[tuple[int, list[str]]]:
+    """`hkcli sync` processes on this test's store, matched on their exact argv (paths may contain
+    spaces, and other runs may use the same binary)."""
     found = []
-    for line in proc.stdout.splitlines():
-        pid, _, cmd = line.partition(" ")
-        args = cmd.split()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        args = [arg.decode(errors="surrogateescape") for arg in raw.split(b"\0")]
+        if args and args[-1] == "":
+            args.pop()
         on_store = any(a == "--store" and b == str(store) for a, b in zip(args, args[1:]))
-        if args and args[0] == hkcli and on_store and "sync" in args:
-            found.append((int(pid), cmd))
+        if args and args[0] == hkcli and on_store and "sync" in args[1:]:
+            found.append((int(entry.name), args))
     return found
 
 
@@ -192,7 +200,9 @@ def main() -> int:
     plugin = str(Path(args.plugin).resolve())
     openclaw = shutil.which("openclaw") or "openclaw"
 
-    work = Path(tempfile.mkdtemp(prefix="hike-e2e-", dir=args.workdir))
+    workdir = Path(args.workdir).absolute()
+    workdir.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="hike-e2e-", dir=workdir))
     state, home = work / "state", work / "home"
     state.mkdir()
     home.mkdir()
@@ -365,7 +375,7 @@ def main() -> int:
                 except ProcessLookupError:
                     pass
             if leftovers:
-                listing = "\n".join(f"{pid} {cmd}" for pid, cmd in leftovers)
+                listing = "\n".join(f"{pid} {shlex.join(args)}" for pid, args in leftovers)
                 log(f"hkcli left running after the Gateway stopped:\n{listing}")
                 failure = failure or SystemExit("hkcli sync was left running after the Gateway stopped")
             else:

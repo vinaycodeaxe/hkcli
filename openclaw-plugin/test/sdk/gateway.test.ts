@@ -1,7 +1,7 @@
 // Needs the openclaw package (installed in CI): drives startHikeAccount with a fake plugin runtime
 // and the fake hkcli.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -76,7 +76,12 @@ function fakeRuntime(state: ReturnType<typeof fakeState>, upsertPairingRequest: 
   };
 }
 
-function gatewayContext(account: ResolvedHikeAccount, abort: AbortController, logs: string[]) {
+function gatewayContext(
+  account: ResolvedHikeAccount,
+  abort: AbortController,
+  logs: string[],
+  statuses: Array<Record<string, unknown>> = [],
+) {
   const log = (line: string) => void logs.push(line);
   return {
     cfg: { channels: { hike: { cliPath: account.cliPath, storeDir: account.storeDir } } },
@@ -86,11 +91,11 @@ function gatewayContext(account: ResolvedHikeAccount, abort: AbortController, lo
     abortSignal: abort.signal,
     log: { info: log, warn: log, error: log, debug: () => {} },
     getStatus: () => ({ accountId: account.accountId }),
-    setStatus: () => {},
+    setStatus: (snapshot: Record<string, unknown>) => void statuses.push(snapshot),
   } as never;
 }
 
-describe("account runs", () => {
+describe("account start", () => {
   let scratch: ReturnType<typeof scratchDir>;
   let account: ResolvedHikeAccount;
   before(() => {
@@ -177,5 +182,37 @@ describe("account runs", () => {
       stopA.abort();
       stopB.abort();
     }
+  });
+
+  it("does not start, or handle anything, until a new cursor is saved", { timeout: 60_000 }, async () => {
+    const state = fakeState();
+    state.failCursorSave(1);
+    let pairings = 0;
+    setHikeRuntime(
+      fakeRuntime(state, async () => {
+        pairings += 1;
+        return { code: "ABCD2345", created: true };
+      }) as never,
+    );
+    const calls = path.join(scratch.dir, "calls.ndjson");
+    const statuses: Array<Record<string, unknown>> = [];
+    process.env.FAKE_HKCLI_USER = "1001";
+    process.env.FAKE_HKCLI_LOG = calls;
+    try {
+      await assert.rejects(
+        startHikeAccount(gatewayContext(account, new AbortController(), [], statuses)),
+        /could not save the new inbound cursor/,
+      );
+    } finally {
+      delete process.env.FAKE_HKCLI_LOG;
+    }
+    assert.deepEqual(state.ops, ["lookup sync-process", "lookup inbound-cursor", "failed save inbound-cursor 1001"]);
+    assert.equal(statuses.at(-1)?.lifecycle, "recovering");
+    const commands = readFileSync(calls, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).command);
+    assert.deepEqual(commands, ["auth status"]);
+    assert.equal(pairings, 0);
   });
 });
