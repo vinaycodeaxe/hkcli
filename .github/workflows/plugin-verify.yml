@@ -52,12 +52,18 @@ jobs:
           node -e '
             const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
             const { plugin } = report;
+            const diagnostics = report.diagnostics ?? [];
             console.log(JSON.stringify({ version: plugin.version, source: plugin.source, status: plugin.status,
-              imported: plugin.imported, channelIds: plugin.channelIds, diagnostics: report.diagnostics }, null, 2));
+              imported: plugin.imported, channelIds: plugin.channelIds, diagnostics }, null, 2));
+            // ClawHub installs of community plugins always get a provenance warning; only errors fail.
+            for (const diagnostic of diagnostics.filter((entry) => entry.level === "warn")) {
+              console.log(`::warning title=OpenClaw plugin diagnostic::${String(diagnostic.message).replace(/\r?\n/g, " ")}`);
+            }
             const problems = [];
             if (plugin.status !== "loaded") problems.push(`status ${plugin.status}`);
             if (plugin.imported !== true) problems.push("runtime entry not imported");
             if (!plugin.channelIds?.includes("hike")) problems.push("hike channel not registered");
-            if ((report.diagnostics ?? []).length > 0) problems.push("diagnostics reported");
+            const errors = diagnostics.filter((entry) => entry.level === "error");
+            if (errors.length > 0) problems.push(`${errors.length} error diagnostic(s)`);
             if (problems.length > 0) throw new Error(problems.join("; "));
           ' "$RUNNER_TEMP/inspect.json"

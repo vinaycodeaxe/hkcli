@@ -166,8 +166,8 @@ jobs:
         with:
           node-version: 24
 
-      - name: Build hkcli 0.3.0
-        run: go build -ldflags "-X github.com/vinaycodeaxe/hkcli/internal/version.Version=0.3.0" -o "$RUNNER_TEMP/bin/hkcli" ./cmd/hkcli
+      - name: Build hkcli
+        run: go build -o "$RUNNER_TEMP/bin/hkcli" ./cmd/hkcli
 
       - name: Install test tools
         run: |

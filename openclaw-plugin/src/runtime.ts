@@ -2,6 +2,7 @@ import { createPluginRuntimeStore, type PluginRuntime } from "openclaw/plugin-sd
 
 const {
   setRuntime: setHikeRuntime,
+  clearRuntime: clearHikeRuntime,
   getRuntime: getHikeRuntime,
   tryGetRuntime: getOptionalHikeRuntime,
 } = createPluginRuntimeStore<PluginRuntime>({
@@ -9,4 +10,4 @@ const {
   errorMessage: "Hike runtime not initialized",
 });
 
-export { getHikeRuntime, getOptionalHikeRuntime, setHikeRuntime };
+export { clearHikeRuntime, getHikeRuntime, getOptionalHikeRuntime, setHikeRuntime };

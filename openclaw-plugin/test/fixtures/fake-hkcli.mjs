@@ -92,6 +92,26 @@ if (command === "messages list") {
   process.exit(0);
 }
 
+if (command === "auth status") {
+  log({ command, args });
+  if (env.FAKE_HKCLI_AUTH_STATUS === "fail") {
+    fail("internal", "could not open the store");
+  }
+  const user = env.FAKE_HKCLI_USER === "none" ? "" : (env.FAKE_HKCLI_USER ?? "1001");
+  print({
+    success: true,
+    data: { logged_in: Boolean(user), user_id: user || null, name: user ? "Me" : null, store: option("--store") },
+    error: null,
+  });
+  process.exit(0);
+}
+
+if (command === "auth logout") {
+  log({ command, store: option("--store") });
+  print({ success: true, data: { logged_out: true, server_logout: "ok" }, error: null });
+  process.exit(0);
+}
+
 if (command === "sync") {
   const mode = env.FAKE_HKCLI_SYNC ?? "events";
   log({ command, pid: process.pid });

@@ -9,9 +9,17 @@ import { HIKE_CHANNEL_ID, hkcliCommandFor, isHikeAccountLinked, type ResolvedHik
 import { loginCommand, logoutHikeAccount } from "./auth.ts";
 import { collectMissedDirectMessages, createHkcliCatchUpSource } from "./catch-up.ts";
 import { parseSyncEvent } from "./events.ts";
-import { HKCLI_INSTALL_HINT, hkcliArgs, probeHkcliVersion, spawnHkcli } from "./hkcli.ts";
+import {
+  HKCLI_INSTALL_HINT,
+  hkcliArgs,
+  probeHkcliVersion,
+  readHkcliUserId,
+  spawnHkcli,
+  type HkcliCommand,
+} from "./hkcli.ts";
 import { INBOUND_TICK_MS, InboundFlow } from "./inbound-flow.ts";
-import { InboundGate, type InboundCursorState, type InboundCursorStore } from "./inbound-gate.ts";
+import { InboundGate } from "./inbound-gate.ts";
+import { applyLogoutMarker, openHikeCursorStore } from "./inbound-state.ts";
 import { createHikeInboundHandler, type HikeLog } from "./inbound.ts";
 import { getHikeRuntime } from "./runtime.ts";
 import { stopChild, superviseProcess, type SupervisedExit } from "./supervisor.ts";
@@ -34,14 +42,42 @@ function createLog(ctx: ChannelGatewayContext<ResolvedHikeAccount>, core: Plugin
   };
 }
 
-function cursorStore(core: PluginRuntime, accountId: string): InboundCursorStore {
-  const store = core.state.openKeyedStoreV2<InboundCursorState>({ namespace: "inbound-cursor", maxEntries: 256 });
-  return {
-    load: async () => await store.lookup(accountId),
-    save: async (state) => {
-      await store.register(accountId, state);
+/**
+ * The account's inbound gate, bound to the Hike user its store is logged in as. Errors are thrown
+ * so the start is retried; a guessed fresh cursor would skip what arrived while it was down.
+ */
+async function openAccountGate(params: {
+  core: PluginRuntime;
+  account: ResolvedHikeAccount;
+  command: HkcliCommand;
+  log: HikeLog;
+  signal: AbortSignal;
+  isStopping: () => boolean;
+}): Promise<InboundGate> {
+  const { core, account, log } = params;
+  const user = await readHkcliUserId(params.command, account.storeDir, { signal: params.signal });
+  const cursors = openHikeCursorStore(core, account.accountId);
+  if (await applyLogoutMarker(account.storeDir, cursors)) {
+    log.info(`hike: account "${account.accountId}" was logged out since it last ran; answering new messages only`);
+  }
+  return await InboundGate.open({
+    store: cursors,
+    user,
+    onUserChanged: (previous, current) => {
+      log.info(
+        `hike: account "${account.accountId}" is now linked to Hike user ${current} (was ${previous}); answering new messages only`,
+      );
     },
-  };
+    onError: (error) => {
+      // During Gateway shutdown plugin state closes first; the last successful save stands.
+      const message = `hike: could not save the inbound cursor: ${String(error)}`;
+      if (params.isStopping()) {
+        log.debug?.(message);
+      } else {
+        log.warn(message);
+      }
+    },
+  });
 }
 
 function lockHolderPid(message: string | undefined): number | undefined {
@@ -85,18 +121,25 @@ export async function startHikeAccount(ctx: ChannelGatewayContext<ResolvedHikeAc
     key: accountId,
     storeDir: account.storeDir,
   });
-  const gate = await InboundGate.open({
-    store: cursorStore(core, accountId),
-    onError: (error) => {
-      // During Gateway shutdown plugin state closes first; the last successful save stands.
-      const message = `hike: could not save the inbound cursor: ${String(error)}`;
-      if (abort.signal.aborted) {
-        log.debug?.(message);
-      } else {
-        log.warn(message);
-      }
-    },
-  });
+  let gate: InboundGate;
+  try {
+    gate = await openAccountGate({
+      core,
+      account,
+      command,
+      log,
+      signal: ctx.abortSignal,
+      isStopping: () => abort.signal.aborted,
+    });
+  } catch (error) {
+    if (ctx.abortSignal.aborted) {
+      return;
+    }
+    const message = `could not load the inbound state of Hike account "${accountId}" (${String(error)}); retrying`;
+    status({ connected: false, lifecycle: "recovering", lastError: message });
+    log.error(`hike: ${message}`);
+    throw error;
+  }
   const queue = createChannelRunQueue({
     setStatus: (patch) => status(patch),
     abortSignal: abort.signal,

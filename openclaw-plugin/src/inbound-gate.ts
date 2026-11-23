@@ -3,6 +3,8 @@
 
 export type InboundCursorState = {
   v: 2;
+  /** Hike user id the state belongs to (missing in state saved by 0.1.0). */
+  user?: string;
   /** Time (epoch ms) up to which every inbound message was handled or deliberately skipped. */
   cursor: number;
   /** Read-backs never go below this; raised only when `seen` overflowed, and never past `cursor`. */
@@ -22,6 +24,9 @@ export type GateMessage = { id: string; fromMe: boolean; ts: number; chatType: "
 
 export type InboundGateOptions = {
   store: InboundCursorStore;
+  /** Hike user id of the linked account: saved state of another user is discarded. */
+  user?: string;
+  onUserChanged?: (previous: string, current: string) => void;
   /** Slack for sender clocks and delivery delays around the cursor. */
   graceMs?: number;
   /** Messages older than this are never answered, however long sync was down. */
@@ -30,6 +35,7 @@ export type InboundGateOptions = {
   maxSeen?: number;
   saveDelayMs?: number;
   now?: () => number;
+  /** A save failed; the state stays dirty and the next save retries. */
   onError?: (error: unknown) => void;
 };
 
@@ -38,7 +44,7 @@ export const DEFAULT_MAX_RECOVERY_AGE_MS = 12 * 60 * 60_000;
 const DEFAULT_MAX_SEEN = 800;
 const RECENT_GROUP_IDS = 1000;
 
-type LoadedState = { cursor: number; floor: number; seen: Map<string, number> };
+type LoadedState = { user?: string; cursor: number; floor: number; seen: Map<string, number> };
 
 function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -48,7 +54,7 @@ function readState(value: unknown): LoadedState | undefined {
   if (typeof value !== "object" || value === null) {
     return undefined;
   }
-  const state = value as { v?: unknown; cursor?: unknown; floor?: unknown; seen?: unknown };
+  const state = value as { v?: unknown; user?: unknown; cursor?: unknown; floor?: unknown; seen?: unknown };
   if (!finite(state.cursor) || !Array.isArray(state.seen)) {
     return undefined;
   }
@@ -59,7 +65,12 @@ function readState(value: unknown): LoadedState | undefined {
         seen.set(entry[0], entry[1]);
       }
     }
-    return { cursor: state.cursor, floor: finite(state.floor) ? state.floor : 0, seen };
+    return {
+      ...(typeof state.user === "string" ? { user: state.user } : {}),
+      cursor: state.cursor,
+      floor: finite(state.floor) ? state.floor : 0,
+      seen,
+    };
   }
   if (state.v === 1) {
     // Version 1 kept bare ids; they are at most a grace period older than the cursor.
@@ -85,6 +96,7 @@ export class InboundGate {
   private readonly pending = new Map<string, { ts: number; direct: boolean }>();
   private readonly activeBounds: number[] = [];
   private readonly store: InboundCursorStore;
+  private readonly user: string | undefined;
   private readonly graceMs: number;
   private readonly maxAgeMs: number;
   private readonly maxSeen: number;
@@ -97,6 +109,7 @@ export class InboundGate {
 
   private constructor(options: InboundGateOptions, state: LoadedState | undefined) {
     this.store = options.store;
+    this.user = options.user ?? state?.user;
     this.now = options.now ?? Date.now;
     this.graceMs = options.graceMs ?? DEFAULT_CURSOR_GRACE_MS;
     this.maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_RECOVERY_AGE_MS;
@@ -108,18 +121,24 @@ export class InboundGate {
     this.liveFloor = this.cursor - this.graceMs;
     this.recoveryFloor = Math.min(state?.floor ?? 0, this.cursor);
     this.seen = state?.seen ?? new Map();
-    this.dirty = !state;
+    // A first run, or state from before the user was recorded, is saved right away.
+    this.dirty = !state || state.user !== this.user;
   }
 
+  /**
+   * Loads the saved state. A failed lookup is thrown: starting from a fresh cursor instead would
+   * drop every message that arrived while the account was down. Unreadable state, or state of
+   * another Hike user, starts from now like a first run.
+   */
   static async open(options: InboundGateOptions): Promise<InboundGate> {
-    let state: LoadedState | undefined;
-    try {
-      state = readState(await options.store.load());
-    } catch (error) {
-      options.onError?.(error);
+    let state = readState(await options.store.load());
+    const { user } = options;
+    if (state?.user !== undefined && user !== undefined && state.user !== user) {
+      options.onUserChanged?.(state.user, user);
+      state = undefined;
     }
     const gate = new InboundGate(options, state);
-    if (!state) {
+    if (gate.dirty) {
       await gate.flush();
     }
     return gate;
@@ -246,6 +265,7 @@ export class InboundGate {
     const seen = [...this.seen].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     return {
       v: 2,
+      ...(this.user !== undefined ? { user: this.user } : {}),
       cursor: this.cursor,
       ...(this.recoveryFloor > 0 ? { floor: this.recoveryFloor } : {}),
       seen,

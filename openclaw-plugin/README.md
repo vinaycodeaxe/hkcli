@@ -83,13 +83,14 @@ Extra accounts: add `channels.hike.accounts.work = {}` and log in with
 top-level keys other than `storeDir` are shared defaults. Once linked, the default account keeps
 running next to the named ones.
 
-## What works in 0.1.0
+## What works in 0.1.1
 
 - Text in and out, in direct and group chats.
 - Photos, files, stickers and other media arrive as a short placeholder such as `[photo: a.jpg]`;
   the agent cannot see media yet and sends text only (links for attachments).
 - Direct messages that arrive while the Gateway is down are answered after it restarts, up to
-  12 hours back. Hike history from before the first start is never answered.
+  12 hours back. Hike history from before the first start is never answered; after a logout, or
+  when another Hike number is linked, the channel starts fresh the same way.
 
 ## Troubleshooting
 

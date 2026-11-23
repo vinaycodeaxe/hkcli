@@ -242,23 +242,67 @@ describe("InboundGate", () => {
     });
   });
 
-  it("ignores unreadable state and reports store errors without throwing", async () => {
+  it("starts from now when another Hike user is linked, and adopts state saved before users were recorded", async () => {
+    const saved = { v: 2, user: "1001", cursor: NOW - HOUR, seen: [["old", NOW - HOUR]] };
+    const changes: Array<[string, string]> = [];
+    const other = memoryStore(saved);
+    const relinked = await InboundGate.open({
+      store: other.store,
+      now: () => NOW,
+      graceMs: GRACE,
+      user: "2002",
+      onUserChanged: (previous, current) => changes.push([previous, current]),
+    });
+    assert.deepEqual(changes, [["1001", "2002"]]);
+    assert.equal(relinked.beginRecovery(), NOW - GRACE);
+    assert.deepEqual(other.saves, [{ v: 2, user: "2002", cursor: NOW, seen: [] }]);
+
+    const same = memoryStore(saved);
+    const kept = await InboundGate.open({ store: same.store, now: () => NOW, graceMs: GRACE, user: "1001" });
+    assert.equal(kept.cursorValue, NOW - HOUR);
+    assert.equal(kept.check(dm("old", NOW - HOUR)), "duplicate");
+    assert.deepEqual(same.saves, []);
+
+    const legacy = memoryStore({ v: 2, cursor: NOW - HOUR, seen: [["old", NOW - HOUR]] });
+    const adopted = await InboundGate.open({
+      store: legacy.store,
+      now: () => NOW,
+      graceMs: GRACE,
+      user: "1001",
+      onUserChanged: () => assert.fail("state without a user is adopted, not discarded"),
+    });
+    assert.equal(adopted.cursorValue, NOW - HOUR);
+    assert.deepEqual(legacy.saves, [{ v: 2, user: "1001", cursor: NOW - HOUR, seen: [["old", NOW - HOUR]] }]);
+  });
+
+  it("refuses to open when the saved state cannot be looked up, instead of starting over", async () => {
+    let saves = 0;
+    const unreachable: InboundCursorStore = {
+      load: async () => {
+        throw new Error("plugin state is closed");
+      },
+      save: async () => {
+        saves += 1;
+      },
+    };
+    await assert.rejects(InboundGate.open({ store: unreachable, now: () => NOW }), /plugin state is closed/);
+    assert.equal(saves, 0);
+  });
+
+  it("starts over on unreadable state and reports failed saves without throwing", async () => {
     const errors: unknown[] = [];
     const failing: InboundCursorStore = {
-      load: async () => {
-        throw new Error("load failed");
-      },
+      load: async () => ({ v: 7 }),
       save: async () => {
         throw new Error("save failed");
       },
     };
     const gate = await InboundGate.open({ store: failing, now: () => NOW, onError: (error) => errors.push(error) });
+    assert.equal(gate.cursorValue, NOW);
     assert.equal(gate.liveFloor, NOW - GRACE);
-    assert.equal(errors.length, 2);
+    assert.equal(errors.length, 1);
     gate.check(dm("x", NOW));
     assert.equal(await gate.commit("x"), false);
-    assert.equal(errors.length, 3);
-    const garbage = await InboundGate.open({ store: memoryStore({ v: 7 }).store, now: () => NOW });
-    assert.equal(garbage.cursorValue, NOW);
+    assert.equal(errors.length, 2);
   });
 });
