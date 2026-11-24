@@ -1007,8 +1007,15 @@ func retryable(err error) bool {
 func (s *Syncer) Follow(ctx context.Context, st *store.Store, idleExit, maxReconnect *time.Duration) (string, error) {
 	backoff, first := time.Second, true
 	var downSince time.Time
+	// Waiting for the relay lock counts as being offline.
+	giveUp := func() bool {
+		if downSince.IsZero() {
+			downSince = time.Now()
+		}
+		return maxReconnect != nil && time.Since(downSince) >= *maxReconnect
+	}
 	for ctx.Err() == nil {
-		lease, err := s.takeRelay(ctx, st)
+		lease, err := s.takeRelay(ctx, st, giveUp)
 		if err != nil {
 			if ctx.Err() != nil {
 				break

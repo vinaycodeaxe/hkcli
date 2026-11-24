@@ -31,7 +31,7 @@ Older history is fetched on request with [`history backfill`](history.md).
 | --- | --- |
 | `--once` | Catch up over HTTP and exit |
 | `--idle-exit SECONDS` | Exit after this long without new events |
-| `--max-reconnect SECONDS` | Give up after failing to connect for this long (default: keep trying) |
+| `--max-reconnect SECONDS` | Give up after failing to connect, or waiting for another hkcli process to close the store's relay connection, for this long (default: keep trying) |
 | `--max-chats N` | Chats to fetch messages for per catch-up (0 = all) |
 | `--pages N` | Max history pages per chat per catch-up (default 3) |
 | `--batch N` | Messages per history request (default 50) |

@@ -322,8 +322,8 @@ func (s *Syncer) setOwnsRelay(owns bool) {
 }
 
 // takeRelay waits until this sync holds the store's relay lock. A command holds it while it
-// sends on a short-lived connection of its own.
-func (s *Syncer) takeRelay(ctx context.Context, st *store.Store) (*RelayLease, error) {
+// sends on a short-lived connection of its own. giveUp is asked after each second of waiting.
+func (s *Syncer) takeRelay(ctx context.Context, st *store.Store, giveUp func() bool) (*RelayLease, error) {
 	told := false
 	for {
 		lease, err := AcquireRelayLease(ctx, st, time.Second)
@@ -334,12 +334,15 @@ func (s *Syncer) takeRelay(ctx context.Context, st *store.Store) (*RelayLease, e
 			s.setOwnsRelay(true)
 			return lease, nil
 		}
+		holder := ""
+		if pid := RelayOwnerPID(st); pid > 0 {
+			holder = fmt.Sprintf(" (pid %d)", pid)
+		}
+		if giveUp() {
+			return nil, &RelayUnavailableError{Msg: fmt.Sprintf("another hkcli process%s kept this store's relay connection busy for longer than --max-reconnect allows", holder)}
+		}
 		if !told {
 			told = true
-			holder := ""
-			if pid := RelayOwnerPID(st); pid > 0 {
-				holder = fmt.Sprintf(" (pid %d)", pid)
-			}
 			s.out.Status(fmt.Sprintf("waiting for another hkcli process%s to close its relay connection", holder))
 		}
 	}

@@ -427,6 +427,18 @@ func TestStopRemovesOnlyItsOwnEndpoint(t *testing.T) {
 	}
 }
 
+func TestASyncWaitingForTheRelayGivesUpWhenItsLimitPasses(t *testing.T) {
+	st := store.New(t.TempDir())
+	defer takeRelay(t, st).Release() // a command keeps the relay
+	s := &Syncer{out: NewEmitter(true, true)}
+	checks := 0
+	_, err := s.takeRelay(context.Background(), st, func() bool { checks++; return checks == 2 })
+	var unavailable *RelayUnavailableError
+	if !errors.As(err, &unavailable) || checks != 2 || s.ownsRelay {
+		t.Fatalf("takeRelay = %v after %d checks (owns relay: %v); want RelayUnavailableError after 2", err, checks, s.ownsRelay)
+	}
+}
+
 func TestOpeningARelayConnectionNeedsTheRelayLock(t *testing.T) {
 	released := takeRelay(t, store.New(t.TempDir()))
 	released.Release()
