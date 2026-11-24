@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import type { ChildProcess } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { hkcliArgs, spawnHkcli } from "../src/hkcli.ts";
 import { parseSyncEvent, type HikeSyncEvent } from "../src/events.ts";
-import { backoffDelay, liveChildCount, superviseProcess, type SupervisedExit } from "../src/supervisor.ts";
+import { backoffDelay, liveChildCount, stopChild, superviseProcess, type SupervisedExit } from "../src/supervisor.ts";
 import { fakeEnv, fakeHkcli, isRunning, missingHkcli, scratchDir, waitFor } from "./helpers.ts";
 
 const fastBackoff = { initialMs: 10, maxMs: 40, factor: 2, jitter: 0 };
@@ -79,6 +81,40 @@ describe("superviseProcess", () => {
     await done;
     assert.equal(isRunning(pid), false);
     assert.ok(Date.now() - started < 5_000);
+  });
+
+  it("asks a child to stop only once", { skip: process.platform === "win32" && "Windows has no SIGINT" }, async () => {
+    // A second SIGINT makes hkcli quit at once, without finishing the sends it took on.
+    const { dir, cleanup } = scratchDir();
+    try {
+      const log = path.join(dir, "log.jsonl");
+      const sigints = () =>
+        existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line.includes("sigint-ignored")).length : 0;
+      const abort = new AbortController();
+      let child: ChildProcess | undefined;
+      let ready = false;
+      const done = superviseProcess({
+        spawn: syncChild("ignore-sigint", log),
+        onStart: (started) => {
+          child = started;
+        },
+        onValue: (value) => {
+          ready ||= parseSyncEvent(value)?.type === "message"; // its SIGINT handler is installed by then
+        },
+        onExit: () => ({ action: "stop" }),
+        signal: abort.signal,
+        stopGraceMs: 500,
+      });
+      await waitFor(() => ready);
+      assert.ok(child);
+      stopChild(child, 500); // a sync restart...
+      await waitFor(() => sigints() === 1);
+      abort.abort(); // ...then the account stopping
+      await done;
+      assert.equal(sigints(), 1);
+    } finally {
+      cleanup();
+    }
   });
 
   it("restarts a crashing child with backoff, then gives up", async () => {

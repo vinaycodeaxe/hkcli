@@ -3,9 +3,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
-/** 0.4.0 publishes replies through the running `hkcli sync`; with older versions each reply opened a
- *  second relay connection, after which Hike could stop delivering messages to the sync. */
-export const MIN_HKCLI_VERSION = "0.4.0";
+/** hkcli 0.4.1 keeps a store to one relay connection: replies go out through the running
+ *  `hkcli sync`. With older versions a reply could open a second connection, after which Hike
+ *  could stop delivering messages to the sync. */
+export const MIN_HKCLI_VERSION = "0.4.1";
 export const HKCLI_GO_INSTALL = "go install github.com/vinaycodeaxe/hkcli/cmd/hkcli@latest";
 export const HKCLI_RELEASES_URL = "https://github.com/vinaycodeaxe/hkcli/releases";
 export const HKCLI_INSTALL_HINT =
@@ -433,6 +434,8 @@ const NOT_SENT_CODES = new Set([
   "aborted",
   "hkcli_missing",
   "spawn_failed",
+  // hkcli could not get the store's relay connection (busy, or Hike unreachable); retrying is safe.
+  "relay_unavailable",
 ]);
 
 export type HkcliSendReceipt = {

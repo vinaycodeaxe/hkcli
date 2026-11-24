@@ -84,6 +84,9 @@ func (s *Store) LockPath() string { return s.path("LOCK") }
 // ControlPath is where a running sync records the endpoint other commands publish through.
 func (s *Store) ControlPath() string { return s.path("sync-control.json") }
 
+// RelayLockPath is held by whichever process has this store's one relay connection open.
+func (s *Store) RelayLockPath() string { return s.path("relay.lock") }
+
 // RefreshLockPath serializes token refreshes across processes.
 func (s *Store) RefreshLockPath() string { return s.path("refresh.lock") }
 

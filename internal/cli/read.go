@@ -114,7 +114,8 @@ func (c *Ctx) runMarkRead(spec string) error {
 	} else {
 		packet = protocol.BuildMarkRead(me, chatID, sender, serverID)
 	}
-	if _, err := c.sendPacket(packet); err != nil {
+	_, via, err := c.sendPacket(packet)
+	if err != nil {
 		return err
 	}
 	if err := conn.UpdateChat(chatID, "unread", 0, "api_unread", 0); err != nil {
@@ -123,7 +124,7 @@ func (c *Ctx) runMarkRead(spec string) error {
 	if err := conn.Commit(); err != nil {
 		return err
 	}
-	c.output(pyjson.O("chat", chatID, "name", name, "up_to", serverID), func() { c.println(fmt.Sprintf("Marked %s as read.", name)) })
+	c.output(pyjson.O("chat", chatID, "name", name, "up_to", serverID, "via", via), func() { c.println(fmt.Sprintf("Marked %s as read.", name)) })
 	return nil
 }
 

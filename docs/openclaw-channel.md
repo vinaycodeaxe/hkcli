@@ -20,7 +20,7 @@ direction, your agent reading and sending *your* Hike messages when you ask, see
 ## What you need
 
 - OpenClaw 2026.11.6 or newer.
-- hkcli 0.4.0 or newer on the Gateway machine.
+- hkcli 0.4.1 or newer on the Gateway machine.
 - A phone with Hike set up for the agent's number.
 
 ## 1. Install hkcli and the plugin
@@ -151,8 +151,8 @@ Access is always checked by Hike user id, never by display name.
 
 | Problem | Fix |
 | --- | --- |
-| `hkcli was not found` or `too old` | Install hkcli 0.4.0 or newer, or set `channels.hike.cliPath` to its full path |
-| Messages stay at one tick and get no answer | Update hkcli to 0.4.0 or newer, then restart the Hike channel |
+| `hkcli was not found` or `too old` | Install hkcli 0.4.1 or newer, or set `channels.hike.cliPath` to its full path |
+| Messages stay at one tick and get no answer | Update hkcli to 0.4.1 or newer, then restart the Hike channel. If the log warns about `late` messages, the account is also open elsewhere (Hike Web in a browser, another hkcli store) |
 | `not linked` | `openclaw channels login --channel hike` |
 | Login says the account is running | Stop the Gateway, log in, then start it again |
 | `Hike login no longer works` | The number was logged out in the Hike app, or the phone removed this device; log in again, then start the channel |

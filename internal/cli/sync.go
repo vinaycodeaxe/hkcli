@@ -81,12 +81,14 @@ func (c *Ctx) runSync(o *syncOptions, idleExit, maxReconnect *time.Duration) err
 		}
 		return nil
 	}
-	if stop, err := s.ServeControl(c.ctx, c.store.ControlPath()); err != nil {
-		out.Status(fmt.Sprintf("other commands will open their own relay connection (%v)", err))
-	} else {
-		defer stop()
+	// Commands send through this endpoint while the sync has the relay connection; without it
+	// they could only wait for the sync to let go of the connection.
+	stop, err := s.ServeControl(c.ctx, c.store.ControlPath())
+	if err != nil {
+		return fmt.Errorf("cannot open the local endpoint other hkcli commands send through: %w", err)
 	}
-	reason, err := s.Follow(c.ctx, idleExit, maxReconnect)
+	defer stop()
+	reason, err := s.Follow(c.ctx, c.store, idleExit, maxReconnect)
 	if err != nil {
 		return err
 	}

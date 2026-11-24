@@ -33,7 +33,7 @@ export type HikeInboundMessage = {
 export type HikeSyncEvent =
   | { type: "message"; message: HikeInboundMessage }
   | { type: "connected" }
-  | { type: "sync"; messages: number }
+  | { type: "sync"; messages: number; late: number }
   | { type: "disconnected"; reason?: string }
   | { type: "stopped"; reason?: string }
   | { type: "error"; code: string; message: string }
@@ -134,7 +134,7 @@ export function parseSyncEvent(value: unknown): HikeSyncEvent | undefined {
     case "connected":
       return { type: "connected" };
     case "sync":
-      return { type: "sync", messages: num(value.messages) ?? 0 };
+      return { type: "sync", messages: num(value.messages) ?? 0, late: num(value.late) ?? 0 };
     case "disconnected":
       return { type: "disconnected", reason: str(value.reason) };
     case "stopped":

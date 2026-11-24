@@ -72,13 +72,21 @@ export function liveChildCount(): number {
   return [...liveChildren].filter((child) => !hasExited(child)).length;
 }
 
+/** Children already asked to stop, with their pending SIGKILL. */
+const stopping = new WeakMap<ChildProcess, ReturnType<typeof setTimeout>>();
+
 /**
  * Stops a child: SIGINT first (hkcli treats it as Ctrl+C; Windows has no signals and kills at
- * once), then SIGKILL if it is still running after `graceMs`.
+ * once), then SIGKILL if it is still running after `graceMs`. Asking again changes nothing: a
+ * second SIGINT would make hkcli quit at once instead of finishing the sends it took on.
  */
 export function stopChild(child: ChildProcess, graceMs = 5_000): ReturnType<typeof setTimeout> | undefined {
   if (hasExited(child)) {
     return undefined;
+  }
+  const pending = stopping.get(child);
+  if (pending !== undefined) {
+    return pending;
   }
   killQuietly(child, process.platform === "win32" ? "SIGKILL" : "SIGINT");
   const escalate = setTimeout(() => {
@@ -86,6 +94,7 @@ export function stopChild(child: ChildProcess, graceMs = 5_000): ReturnType<type
       killQuietly(child, "SIGKILL");
     }
   }, graceMs);
+  stopping.set(child, escalate);
   child.once("close", () => clearTimeout(escalate));
   return escalate;
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/vinaycodeaxe/hkcli/internal/mqtt"
 	"github.com/vinaycodeaxe/hkcli/internal/pyjson"
 	"github.com/vinaycodeaxe/hkcli/internal/store"
+	"github.com/vinaycodeaxe/hkcli/internal/syncer"
 	"github.com/vinaycodeaxe/hkcli/internal/version"
 )
 
@@ -174,11 +176,15 @@ func (c *Ctx) readStdin(read func(*bufio.Reader) (string, error)) (string, error
 
 // Main runs hkcli with the given arguments and returns the exit code.
 func Main(args []string) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// SIGTERM (service managers, kill; on Windows, closing the console) stops as gracefully as
+	// Ctrl+C: a sync then finishes the sends it took on and removes its control endpoint.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
 		<-ctx.Done()
-		stop() // a second Ctrl+C ends the process at once
+		// A second Ctrl+C ends the process at once. Another SIGTERM changes nothing: service
+		// managers may repeat it.
+		signal.Reset(os.Interrupt)
 	}()
 	app := &app{ctx: &Ctx{ctx: ctx, stdout: os.Stdout, stderr: os.Stderr}}
 	defer app.ctx.close()
@@ -220,6 +226,8 @@ func (a *app) exitCode(cmd *cobra.Command, err error) int {
 	var loginErr *auth.LoginError
 	var hikeErr *api.Error
 	var relayErr *mqtt.Error
+	var busyErr *syncer.RelayUnavailableError
+	var tooLargeErr *syncer.TooLargeError
 	switch {
 	case errors.As(err, &authErr):
 		code, exit = "auth_required", exitAuth
@@ -234,6 +242,10 @@ func (a *app) exitCode(cmd *cobra.Command, err error) int {
 		}
 	case errors.As(err, &relayErr):
 		code = "relay_error"
+	case errors.As(err, &busyErr):
+		code = "relay_unavailable" // nothing was sent
+	case errors.As(err, &tooLargeErr):
+		code = "invalid_input"
 	}
 	if a.ctx.json {
 		fmt.Fprintln(a.ctx.stdout, pyjson.Dumps(pyjson.O("success", false, "data", nil, "error", pyjson.O("code", code, "message", err.Error()))))

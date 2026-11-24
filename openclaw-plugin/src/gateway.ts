@@ -27,9 +27,13 @@ import { stopChild, superviseProcess, type SupervisedExit } from "./supervisor.t
 import { SyncProcessTracker, type SyncProcessRecord } from "./sync-process.ts";
 
 const accountRuns = new AccountRuns();
-/** hkcli sync finishes sends it took on for `hkcli send` before it disconnects (up to 25 s). */
-const SYNC_STOP_GRACE_MS = 30_000;
-/** A replaced run takes up to ~90 s to stop: hkcli (30 s), then replies in flight (60 s). */
+/**
+ * hkcli sync finishes sends it took on for `hkcli send` (up to 25 s), closes its relay connection
+ * (up to 5 s) and lets its local endpoint's last requests finish (up to 10 s) before it exits; see
+ * the time budget in hkcli's internal/syncer/control.go.
+ */
+const SYNC_STOP_GRACE_MS = 45_000;
+/** A replaced run takes up to ~105 s to stop: hkcli (45 s), then replies in flight (60 s). */
 const PREVIOUS_RUN_WAIT_MS = 120_000;
 
 function createLog(ctx: ChannelGatewayContext<ResolvedHikeAccount>, core: PluginRuntime): HikeLog {
@@ -234,6 +238,13 @@ async function runHikeAccount(
           case "sync":
             processes.lockHeld(child?.pid);
             flow.synced(event.messages);
+            if (event.late > 0) {
+              log.warn(
+                `hike: ${event.late} message(s) sent while hkcli's connection was listening reached it only after ` +
+                  "it reconnected: Hike had stopped delivering to that connection (is this account open in Hike Web " +
+                  "or another hkcli store?). The agent did not see group messages among them.",
+              );
+            }
             return;
           case "disconnected":
             flow.connectionLost();

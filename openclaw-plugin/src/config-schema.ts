@@ -6,6 +6,7 @@ import {
 } from "openclaw/plugin-sdk/channel-config-schema";
 import { createChannelConfigUiHints, type ChannelConfigUiHint } from "openclaw/plugin-sdk/channel-core";
 import { z } from "zod";
+import { MIN_HKCLI_VERSION } from "./hkcli.ts";
 
 const { accountShape, rootPolicyShape } = buildChannelAccountSchemaParts({
   omit: [
@@ -63,7 +64,7 @@ const hikeUiHints = {
   }),
   cliPath: {
     label: "hkcli Path",
-    help: "Command or path of the hkcli binary (default: hkcli on PATH). Needs hkcli 0.4.0 or newer.",
+    help: `Command or path of the hkcli binary (default: hkcli on PATH). Needs hkcli ${MIN_HKCLI_VERSION} or newer.`,
   },
   storeDir: {
     label: "hkcli Store Directory",

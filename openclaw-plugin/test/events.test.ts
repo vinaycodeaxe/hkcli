@@ -93,7 +93,8 @@ describe("parseSyncEvent", () => {
 
   it("reads lifecycle events and error envelopes", () => {
     assert.deepEqual(parseSyncEvent({ event: "connected" }), { type: "connected" });
-    assert.deepEqual(parseSyncEvent({ event: "sync", messages: 3, chats: 2 }), { type: "sync", messages: 3 });
+    assert.deepEqual(parseSyncEvent({ event: "sync", messages: 3, chats: 2 }), { type: "sync", messages: 3, late: 0 });
+    assert.deepEqual(parseSyncEvent({ event: "sync", messages: 3, late: 2 }), { type: "sync", messages: 3, late: 2 });
     assert.deepEqual(parseSyncEvent({ event: "disconnected", reason: "eof" }), { type: "disconnected", reason: "eof" });
     assert.deepEqual(parseSyncEvent({ event: "typing", chat: "2002" }), { type: "ignored", name: "typing" });
     assert.deepEqual(

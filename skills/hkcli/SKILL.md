@@ -88,7 +88,9 @@ Login needs the user's phone, so ask the user to run it in a terminal on this ma
   When a name is ambiguous, take the id from `chats list --json`.
 - Message ids look like `20:1760000001000` (from Hike) or a UUID (just sent, not yet confirmed).
 - `--json` prints `{"success", "data", "error"}`. Errors carry `error.code`, for example
-  `auth_required`, `ambiguous`, `not_found`, `read_only` or `store_locked`.
+  `auth_required`, `ambiguous`, `not_found`, `read_only` or `store_locked`. `relay_unavailable`
+  means nothing was sent and you can retry; after `relay_error` the message may have gone out, so
+  check `messages list` before sending again.
 - Store: `~/.hkcli` (override with `--store` or `HKCLI_STORE`); one store per Hike account.
 - hkcli is unofficial. If Hike changes its servers, commands can fail until hkcli is updated.
 - Docs: https://vinaycodeaxe.github.io/hkcli/
