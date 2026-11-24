@@ -41,7 +41,8 @@ hkcli auth
 
 The terminal QR code works over SSH. You can also use `hkcli auth --qr-format png` and
 open the image, or `hkcli auth --phone +919876543210` for an SMS code. Check the result
-with `hkcli auth status`.
+with `hkcli auth status`. Afterwards, do not log this number out of the Hike app: that logs
+hkcli out too (see [Auth gotchas](auth.md#gotchas)).
 
 ## 3. Install the skill
 

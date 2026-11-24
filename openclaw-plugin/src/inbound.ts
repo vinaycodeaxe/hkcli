@@ -52,7 +52,11 @@ function hasEntries(entries: Array<string | number> | undefined): boolean {
 }
 
 export type HikeInboundHandlerParams = {
-  cfg: OpenClawConfig;
+  /**
+   * The Gateway's current config, read once per message: bindings, agents and session settings
+   * reload without restarting the channel. Only `channels.hike` changes restart it.
+   */
+  readConfig: () => OpenClawConfig;
   account: ResolvedHikeAccount;
   core: PluginRuntime;
   log: HikeLog;
@@ -62,7 +66,7 @@ export type HikeInboundHandlerParams = {
 };
 
 export function createHikeInboundHandler(params: HikeInboundHandlerParams) {
-  const { cfg, account, core, log } = params;
+  const { account, core, log } = params;
   const accountId = account.accountId;
   const pairing = createChannelPairingController({ core, channel: HIKE_CHANNEL_ID, accountId });
 
@@ -73,7 +77,7 @@ export function createHikeInboundHandler(params: HikeInboundHandlerParams) {
     core.channel.activity.record({ channel: HIKE_CHANNEL_ID, accountId, direction: "outbound" });
   };
 
-  const deliverReply = async (chatId: string, payload: OutboundReplyPayload) => {
+  const deliverReply = async (cfg: OpenClawConfig, chatId: string, payload: OutboundReplyPayload) => {
     const links = [payload.mediaUrl, ...(payload.mediaUrls ?? [])].filter(isHttpUrl);
     const text = [renderHikeText(payload.text ?? "", cfg, accountId), ...links.map((url) => `Attachment: ${url}`)]
       .filter(Boolean)
@@ -93,6 +97,7 @@ export function createHikeInboundHandler(params: HikeInboundHandlerParams) {
     if (!rawBody || !message.senderId) {
       return;
     }
+    const cfg = params.readConfig();
     // Recorded as handled right before the first side effect, so a crash or restart never answers
     // twice; once the account is stopping it stays unhandled for the next run instead.
     const markHandled = async (): Promise<boolean> => {
@@ -298,7 +303,7 @@ export function createHikeInboundHandler(params: HikeInboundHandlerParams) {
       ctxPayload,
       delivery: {
         deliver: async (payload) => {
-          await deliverReply(message.chatId, payload);
+          await deliverReply(cfg, message.chatId, payload);
         },
         onError: (error, info) => {
           log.error(`hike: ${info.kind} reply to ${message.chatId} failed: ${String(error)}`);

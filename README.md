@@ -104,6 +104,8 @@ and [OpenClaw channel](https://vinaycodeaxe.github.io/hkcli/openclaw-channel.htm
 - Photos and videos are sent as documents. Voice notes, stickers, GIFs, view-once media and
   calls are received and stored, but not sent.
 - Read and delivery ticks are tracked for one-to-one chats only.
+- Logging your account out of the Hike app logs hkcli out too, and Hike sends only a few SMS
+  login codes per number. See [Auth gotchas](https://vinaycodeaxe.github.io/hkcli/auth.html#gotchas).
 
 ## How it works
 

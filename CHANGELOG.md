@@ -7,6 +7,17 @@ section for each tagged version into the GitHub release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Gotchas in the docs, the OpenClaw skill and the channel plugin's readme: logging out in the
+  Hike app ends hkcli's login, the app holds one number at a time, Hike limits SMS codes, and the
+  channel's PATH, group id, routing and slow-model pitfalls.
+
+### Fixed
+
+- OpenClaw channel 0.1.2: changes to bindings, agents and session settings now apply to the next
+  Hike message. Before, they needed a restart of the Hike channel.
+
 ## [0.3.1] - 2026-11-23
 
 ### Changed

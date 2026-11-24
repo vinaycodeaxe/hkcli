@@ -24,6 +24,17 @@ hkcli doctor --connect  # also tests Hike's API and live relay
 The saved login is missing, or Hike no longer accepts it. Run `hkcli auth status`, then
 `hkcli auth --force` to link again.
 
+## The login stopped working after using the Hike app
+
+Logging the account out of the Hike app, or switching the app to another number, ends hkcli's
+login too. Run `hkcli auth --force`. To keep the app on a different number, log this one in with
+an SMS code instead; see [Auth gotchas](auth.md#gotchas).
+
+## "OTP send limit reached"
+
+Hike sends no more SMS codes to this number for a while. Try again later, for example the next
+day, or use QR login if the Hike app is logged in to this number.
+
 ## "another hkcli process is already running sync"
 
 Only one `sync` or `auth` can use a store at a time. Stop the other one, or leave it

@@ -27,6 +27,8 @@ recent messages.
 
 If the code does not scan, run `hkcli auth --qr-format png` to open it as an image, or
 log in with an SMS code: `hkcli auth --phone +919876543210`. More on [Auth](auth.md).
+Later, do not log this account out of the Hike app: that logs hkcli out too (see
+[gotchas](auth.md#gotchas)).
 
 ## 3. Look around
 

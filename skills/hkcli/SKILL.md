@@ -45,6 +45,13 @@ Login needs the user's phone, so ask the user to run it in a terminal on this ma
   or `hkcli auth --phone +<country code><number>` for an SMS code.
 - Check: `hkcli auth status --json`. Exit code 3 from any command means the login is missing or expired.
 
+## Gotchas
+
+- Logging this number out of the Hike app, or switching the app to another number, ends hkcli's
+  login too: commands exit with code 3. Ask the user to log in again; do not retry in a loop.
+- Hike sends only a few SMS codes per number. After `OTP send limit reached`, tell the user to try
+  again later (for example the next day) instead of starting another SMS login.
+
 ## Fresh data
 
 - `hkcli sync --once` catches up. Run it before reading if results might be stale.
