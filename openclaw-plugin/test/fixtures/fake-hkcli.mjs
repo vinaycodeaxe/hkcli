@@ -42,7 +42,7 @@ const command = args
   .join(" ");
 
 if (args.includes("--version")) {
-  process.stdout.write(`hkcli ${env.FAKE_HKCLI_VERSION ?? "0.3.0"}\n`);
+  process.stdout.write(`hkcli ${env.FAKE_HKCLI_VERSION ?? "0.4.0"}\n`);
   process.exit(0);
 }
 

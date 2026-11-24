@@ -72,6 +72,15 @@ hkcli sync --json | jq -r 'select(.event == "message") | "\(.chat_name): \(.text
 Only one `sync` (or `auth`) can run per store at a time; a second one exits with
 `store_locked`. Other commands, including `send`, keep working while sync runs.
 
+## Sending while sync runs
+
+While `hkcli sync` is connected, `send`, `chats mark-read` and `doctor --connect` on the same
+store go out through its connection instead of opening a second one. Hike's relay can stop
+delivering messages to a connection once another connection of the same account appears, so
+messages would stay at one tick until sync reconnected. Sync records where to reach it in
+`sync-control.json` in the store (a port on 127.0.0.1 and a random token) and deletes the file
+when it stops. Without a running sync, commands connect on their own as before.
+
 ## Run sync as a service
 
 To keep the store up to date all the time, run `hkcli sync` in the background. The examples

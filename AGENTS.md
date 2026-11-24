@@ -63,6 +63,9 @@ Hike accounts (test only against `tests/fakehike.py`):
 - The Hike app holds one number at a time. A second number (for example an agent's) logs in with
   an SMS code and stays out of the app.
 - SMS codes are rate limited per number (`OTP send limit reached`); more attempts do not help.
+- Keep one relay connection per account. A second web connection can make Hike stop delivering to
+  the first one without closing it, so while `sync` runs, other commands publish through it
+  (`internal/syncer/control.go`); never open another relay connection next to a running sync.
 - hkcli identifies itself honestly (`User-Agent: hkcli/<version>`). Never disguise it to get
   around Hike's limits.
 

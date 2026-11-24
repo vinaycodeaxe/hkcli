@@ -17,6 +17,7 @@ Everything hkcli saves lives in one folder per account: `~/.hkcli` by default
 | `hike.db` | Chats, messages, contacts and the search index (SQLite; the `-wal` and `-shm` files belong to it) |
 | `media/` | Downloaded attachments |
 | `LOCK`, `refresh.lock` | Lock files that stop two processes from clashing |
+| `sync-control.json` | While `sync` runs: where other commands reach it to send through its connection |
 | `login-qr.png` | The QR image while you log in; deleted afterwards |
 
 On macOS and Linux, the folder and the login files are readable only by you.

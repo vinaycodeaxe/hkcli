@@ -10,10 +10,10 @@ The Gateway is then killed hard: the next run must stop the hkcli sync it left b
 hkcli stores while the Gateway is down must reach the agent after a restart, and no earlier DM may
 be answered twice. Finally `channels logout` signs the device out, and no hkcli sync may be left
 running. Without a model the agent turn itself fails, so dispatch is read from the Gateway's
-diagnostics.
+diagnostics. Replies must go out over hkcli sync's relay connection, never a second one.
 
 Usage: python tests/openclaw_channel_e2e.py --hkcli PATH --plugin PATH.tgz
-Needs Linux, `openclaw` on PATH, hkcli 0.3.0+ built from this repo, and requirements-dev.txt.
+Needs Linux, `openclaw` on PATH, hkcli 0.4.0+ built from this repo, and requirements-dev.txt.
 """
 
 from __future__ import annotations
@@ -263,6 +263,7 @@ def main() -> int:
             raise SystemExit(f"gateway exited early with code {gateway.returncode}")
         log("hkcli sync is connected")
         time.sleep(3)
+        sync_connects = len(fake.mqtt_connects)
 
         fake.push(dm(NEW_PEER, "hello, who is this?"))
         reply = wait_for(lambda: [t for t in sent_to(fake, NEW_PEER) if "Pairing code" in t], 90, "the pairing reply")[0]
@@ -288,6 +289,8 @@ def main() -> int:
             raise SystemExit(f"approval notification was not sent: {approved}")
         wait_for(lambda: len(sent_to(fake, NEW_PEER)) >= 2, 60, "the approval confirmation")
         log(f"approval confirmation: {sent_to(fake, NEW_PEER)[-1]!r}")
+        if len(fake.mqtt_connects) != sync_connects:
+            raise SystemExit("a reply opened its own relay connection next to hkcli sync's")
         replies_before = len(sent_to(fake, NEW_PEER))
         thanks = dm(NEW_PEER, "thanks!")
         fake.push(thanks)

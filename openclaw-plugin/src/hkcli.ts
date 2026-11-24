@@ -3,7 +3,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
-export const MIN_HKCLI_VERSION = "0.3.0";
+/** 0.4.0 publishes replies through the running `hkcli sync`; with older versions each reply opened a
+ *  second relay connection, after which Hike could stop delivering messages to the sync. */
+export const MIN_HKCLI_VERSION = "0.4.0";
 export const HKCLI_GO_INSTALL = "go install github.com/vinaycodeaxe/hkcli/cmd/hkcli@latest";
 export const HKCLI_RELEASES_URL = "https://github.com/vinaycodeaxe/hkcli/releases";
 export const HKCLI_INSTALL_HINT =

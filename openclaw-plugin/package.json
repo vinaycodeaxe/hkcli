@@ -1,6 +1,6 @@
 {
   "name": "@vinaycodeaxe/hkcli-channel",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Hike Messenger channel for OpenClaw: the agent gets its own Hike account, driven by the hkcli command line tool.",
   "license": "MIT",
   "author": "Vinay Chaudhary",

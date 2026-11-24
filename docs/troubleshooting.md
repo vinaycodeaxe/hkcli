@@ -35,6 +35,13 @@ an SMS code instead; see [Auth gotchas](auth.md#gotchas).
 Hike sends no more SMS codes to this number for a while. Try again later, for example the next
 day, or use QR login if the Hike app is logged in to this number.
 
+## Messages stay at one tick while sync runs
+
+Update to hkcli 0.4.0 or newer. Older versions opened a second relay connection for every
+`send`, after which Hike could stop delivering messages to the running `sync` until it
+reconnected. Now commands send through the running sync; see
+[Sending while sync runs](sync.md#sending-while-sync-runs).
+
 ## "another hkcli process is already running sync"
 
 Only one `sync` or `auth` can use a store at a time. Stop the other one, or leave it

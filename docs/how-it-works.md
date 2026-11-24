@@ -52,6 +52,11 @@ Hike's relay is MQTT 3.1.1 over WebSocket at `wss://relay-ws.hikeapp.com/mqtt`:
 - **Hike extension:** the broker's PUBACK carries a payload after the packet id (a 2-byte
   length, then the bytes) holding the server message id. Standard MQTT libraries reject such a
   PUBACK, so hkcli has a small MQTT client of its own (`internal/mqtt`).
+- **One connection per account.** Hike Web sends and receives on a single connection. When a
+  second web connection of the same account connects, the broker sometimes closes the first
+  one and sometimes keeps it open but stops delivering to it, so messages stay at one tick. A
+  running `hkcli sync` therefore sends for the other commands on its store (see
+  [Sync](sync.md#sending-while-sync-runs)).
 
 Packets are JSON with short keys:
 

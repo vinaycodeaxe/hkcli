@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -64,7 +65,10 @@ func OpenMQTT(ctx context.Context, client *api.Client) (*mqtt.Client, error) {
 // returns the server id from the PUBACK ("" if none). QoS 1 publishes are
 // retried with the same payload, like Hike Web.
 func PublishPacket(ctx context.Context, client *mqtt.Client, me string, packet pyjson.Object, qos byte) (string, error) {
-	payload := []byte(pyjson.DumpsCompact(packet))
+	return publishPayload(ctx, client, me, []byte(pyjson.DumpsCompact(packet)), qos)
+}
+
+func publishPayload(ctx context.Context, client *mqtt.Client, me string, payload []byte, qos byte) (string, error) {
 	if qos == 0 {
 		_, err := client.Publish(ctx, me, payload, 0, 0)
 		return "", err
@@ -154,7 +158,9 @@ type Syncer struct {
 	me            string
 	out           *Emitter
 	opts          Options
+	clientMu      sync.Mutex // guards client and publishing, used by control requests (control.go)
 	client        *mqtt.Client
+	publishing    int
 	groupsFetched map[string]bool
 }
 
@@ -597,7 +603,7 @@ func (s *Syncer) CatchUp(ctx context.Context, contacts bool) (Counts, error) {
 	if _, err := s.ResolveNames(ctx); err != nil {
 		return counts, err
 	}
-	if s.opts.Receipts && s.client != nil {
+	if s.opts.Receipts && s.liveClient() != nil {
 		n, err := s.sendFirstDeliveries(ctx, chats)
 		if err != nil {
 			return counts, err
@@ -616,7 +622,7 @@ func (s *Syncer) sendFirstDeliveries(ctx context.Context, chats []chatInfo) (int
 		if !chat.undelivered || chat.lastServerID == "" || !pyjson.Truthy(chat.lastSender) || chat.lastSender == s.me {
 			continue
 		}
-		_, err := PublishPacket(ctx, s.client, s.me, protocol.BuildFirstDelivery(s.me, chat.id, chat.lastServerID), 1)
+		_, err := PublishPacket(ctx, s.liveClient(), s.me, protocol.BuildFirstDelivery(s.me, chat.id, chat.lastServerID), 1)
 		var relayErr *mqtt.Error
 		if errors.As(err, &relayErr) {
 			s.out.Status(fmt.Sprintf("could not send delivery receipts: %v", err))
@@ -983,8 +989,11 @@ func (s *Syncer) Follow(ctx context.Context, idleExit, maxReconnect *time.Durati
 			backoff = min(backoff*2, 60*time.Second)
 			continue
 		}
-		s.client, downSince = client, time.Time{}
+		s.setClient(client)
+		downSince = time.Time{}
 		reason, err := s.listen(ctx, client, &first, &backoff, idleExit)
+		s.setClient(nil) // control requests now wait for the next connection
+		s.drainPublishes(controlDrainTimeout)
 		if err != nil && ctx.Err() == nil && retryable(err) {
 			s.out.Status(fmt.Sprintf("connection lost (%v); reconnecting in %.0fs", err, backoff.Seconds()))
 			s.out.Emit("disconnected", "reason", err.Error())
@@ -996,7 +1005,6 @@ func (s *Syncer) Follow(ctx context.Context, idleExit, maxReconnect *time.Durati
 			_, _ = PublishPacket(context.Background(), client, s.me, protocol.BuildPresence(s.me, false), 0)
 		}
 		client.Disconnect()
-		s.client = nil
 		if ctx.Err() != nil {
 			break
 		}

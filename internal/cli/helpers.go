@@ -371,8 +371,14 @@ func messageLine(m pyjson.Object, withChat bool) string {
 	return fmt.Sprintf("%s  %s%s: %s   (%s)", syncer.FmtTime(ts), where, pyjson.Str(m.Get("sender_name")), text, pyjson.Str(m.Get("id")))
 }
 
-// sendPacket publishes one packet over a short-lived relay connection.
+// sendPacket publishes one packet: through a `sync` running on this store when there is one
+// (Hike's relay handles a second connection of the same account badly), else over a
+// short-lived relay connection of its own.
 func (c *Ctx) sendPacket(packet pyjson.Object) (string, error) {
+	payload := []byte(pyjson.DumpsCompact(packet))
+	if serverID, handled, err := syncer.PublishViaSync(c.ctx, c.store.ControlPath(), payload, 1); handled {
+		return serverID, err
+	}
 	client, err := c.API()
 	if err != nil {
 		return "", err

@@ -81,6 +81,9 @@ func (s *Store) MediaDir() string { return s.path("media") }
 // LockPath is held while a login or sync runs.
 func (s *Store) LockPath() string { return s.path("LOCK") }
 
+// ControlPath is where a running sync records the endpoint other commands publish through.
+func (s *Store) ControlPath() string { return s.path("sync-control.json") }
+
 // RefreshLockPath serializes token refreshes across processes.
 func (s *Store) RefreshLockPath() string { return s.path("refresh.lock") }
 
@@ -100,6 +103,9 @@ func (s *Store) Ensure() error {
 
 // NowMS is the current time in epoch milliseconds.
 func NowMS() int64 { return time.Now().UnixMilli() }
+
+// WriteFileAtomic writes a private (0600) file through a temp file and a rename.
+func WriteFileAtomic(path, data string) error { return writeJSONAtomic(path, data) }
 
 // writeJSONAtomic writes data through a temp file and a rename, so readers never
 // see a half-written file.

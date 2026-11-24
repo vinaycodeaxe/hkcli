@@ -63,7 +63,7 @@ const hikeUiHints = {
   }),
   cliPath: {
     label: "hkcli Path",
-    help: "Command or path of the hkcli binary (default: hkcli on PATH). Needs hkcli 0.3.0 or newer.",
+    help: "Command or path of the hkcli binary (default: hkcli on PATH). Needs hkcli 0.4.0 or newer.",
   },
   storeDir: {
     label: "hkcli Store Directory",
