@@ -84,8 +84,8 @@ func (c *Ctx) runDoctor(connect bool) error {
 		default:
 			return err
 		}
-		if err := c.checkRelay(); err == nil {
-			check("relay", true, "MQTT login and subscribe ok")
+		if detail, err := c.checkRelay(); err == nil {
+			check("relay", true, detail)
 		} else {
 			var relayErr *mqtt.Error
 			if !errors.As(err, &relayErr) && !api.IsHikeError(err) {
@@ -110,16 +110,26 @@ func (c *Ctx) runDoctor(connect bool) error {
 	return nil
 }
 
-func (c *Ctx) checkRelay() error {
+// checkRelay logs in to the relay and subscribes. While a sync runs on this store it asks the
+// sync instead: a second connection could stop Hike delivering to the sync's.
+func (c *Ctx) checkRelay() (string, error) {
+	if connected, ok, pid := syncer.SyncRelayStatus(c.ctx, c.store.ControlPath()); ok {
+		if !connected {
+			return "", &mqtt.Error{Kind: mqtt.KindDisconnected, Msg: fmt.Sprintf("the running hkcli sync (pid %d) is not connected to Hike right now", pid)}
+		}
+		return fmt.Sprintf("connected through the running hkcli sync (pid %d)", pid), nil
+	}
 	client, err := c.API()
 	if err != nil {
-		return err
+		return "", err
 	}
 	relay, err := syncer.OpenMQTT(c.ctx, client)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer relay.Disconnect()
-	_, err = relay.Subscribe(c.ctx, "u:"+client.Session.UserID, 1)
-	return err
+	if _, err = relay.Subscribe(c.ctx, "u:"+client.Session.UserID, 1); err != nil {
+		return "", err
+	}
+	return "MQTT login and subscribe ok", nil
 }

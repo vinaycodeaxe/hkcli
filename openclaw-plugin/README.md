@@ -12,7 +12,7 @@ Full guide: https://vinaycodeaxe.github.io/hkcli/openclaw-channel.html
 ## Requirements
 
 - OpenClaw 2026.11.6 or newer, with a local Gateway.
-- hkcli 0.3.0 or newer on the Gateway host:
+- hkcli 0.4.0 or newer on the Gateway host:
   `go install github.com/vinaycodeaxe/hkcli/cmd/hkcli@latest`, or a binary from
   https://github.com/vinaycodeaxe/hkcli/releases.
 - A phone with the Hike account the agent should use.
@@ -93,7 +93,7 @@ Extra accounts: add `channels.hike.accounts.work = {}` and log in with
 top-level keys other than `storeDir` are shared defaults. Once linked, the default account keeps
 running next to the named ones.
 
-## What works in 0.1.2
+## What works in 0.2.0
 
 - Text in and out, in direct and group chats.
 - Photos, files, stickers and other media arrive as a short placeholder such as `[photo: a.jpg]`;
@@ -102,6 +102,8 @@ running next to the named ones.
   12 hours back. Hike history from before the first start is never answered; after a logout, or
   when another Hike number is linked, the channel starts fresh the same way.
 - Changes to bindings, agents and session settings apply to the next message without a restart.
+- Replies go out over the channel's own Hike connection (hkcli 0.4.0), so Hike keeps delivering
+  new messages after the agent answers.
 
 ## Gotchas
 
@@ -119,7 +121,10 @@ running next to the named ones.
 
 ## Troubleshooting
 
-- `hkcli was not found` / `too old`: install hkcli 0.3.0+ or set `channels.hike.cliPath`.
+- `hkcli was not found` / `too old`: install hkcli 0.4.0+ or set `channels.hike.cliPath`.
+- Messages stay at one tick and get no answer: update hkcli to 0.4.0 or newer, then restart the
+  channel. Older versions sent each reply over a second Hike connection, after which Hike could
+  stop delivering to the channel.
 - `not linked`: run `openclaw channels login --channel hike`.
 - Login says the account is running: stop it first with
   `openclaw gateway call channels.stop --params '{"channel":"hike","accountId":"default"}'`

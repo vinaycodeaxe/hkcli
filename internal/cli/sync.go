@@ -81,6 +81,11 @@ func (c *Ctx) runSync(o *syncOptions, idleExit, maxReconnect *time.Duration) err
 		}
 		return nil
 	}
+	if stop, err := s.ServeControl(c.ctx, c.store.ControlPath()); err != nil {
+		out.Status(fmt.Sprintf("other commands will open their own relay connection (%v)", err))
+	} else {
+		defer stop()
+	}
 	reason, err := s.Follow(c.ctx, idleExit, maxReconnect)
 	if err != nil {
 		return err

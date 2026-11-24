@@ -1,10 +1,13 @@
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import uuid
 from pathlib import Path
+
+import pytest
 
 from fakehike import GROUP, NEW_PEER, PEER, T0, USER
 from lockhelper import FileLock
@@ -138,6 +141,64 @@ def test_sync_follow_stores_live_events(fake, store, cli, logged_in):
     assert text_of(f"20:{T0 + 1000}")["text"] == "hello again"
     assert text_of(my_server_id)["state"] == "read"
     assert conn.execute("SELECT emoji FROM reactions WHERE target_id=? AND sender_id=?", (f"21:{T0 + 2000}", PEER)).fetchone()[0] == "❤️"
+
+
+def test_commands_publish_through_a_running_sync(fake, store, cli, logged_in):
+    # Hike's relay may stop delivering to a connection once a second one of the account appears.
+    proc = subprocess.Popen(
+        [str(cli.bin), "--json", "sync", "--idle-exit", "8"],
+        env=dict(os.environ), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+    )
+    try:
+        assert fake.wait_for(lambda: fake.packets("fdr")), "sync never finished its catch-up"
+        assert (store / "sync-control.json").exists(), "sync did not record its control endpoint"
+        connects = len(fake.mqtt_connects)
+        code, out, err = cli("send", "text", "--to", "Asha", "--message", "one connection")
+        assert code == 0, err
+        assert fake.packets("m")[-1]["d"]["m"] == "one connection"
+        assert re.fullmatch(r"\d+:\d+", out["data"]["server_id"])
+        assert cli("chats", "mark-read", "--chat", "Asha")[0] == 0
+        relay = next(c for c in cli("doctor", "--connect")[1]["data"]["checks"] if c["check"] == "relay")
+        assert relay["ok"] and "running hkcli sync" in relay["detail"], relay
+        assert len(fake.mqtt_connects) == connects, "a command opened its own relay connection next to the sync's"
+        _, err = proc.communicate(timeout=40)
+    finally:
+        proc.kill()
+    assert proc.returncode == 0, err
+    assert not (store / "sync-control.json").exists()
+
+    code, out, err = cli("send", "text", "--to", "Asha", "--message", "no sync running")
+    assert code == 0 and len(fake.mqtt_connects) == connects + 1, err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="stops sync with SIGINT")
+def test_stopping_sync_finishes_a_send_in_flight(fake, store, cli, logged_in):
+    def start(*args):
+        return subprocess.Popen([str(cli.bin), "--json", *args], env=dict(os.environ), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+
+    sync = start("sync")
+    procs = [sync]
+    try:
+        assert fake.wait_for(lambda: fake.packets("fdr")), "sync never finished its catch-up"
+        fake.reset_relay_peak()
+        fake.puback_delay = 2.0
+        first = start("send", "text", "--to", "Asha", "--message", "in flight")
+        procs.append(first)
+        assert fake.wait_for(lambda: any(p.get("d", {}).get("m") == "in flight" for p in fake.packets("m"))), "the send never reached the relay"
+        sync.send_signal(signal.SIGINT)  # before Hike acknowledged it
+        second = start("send", "text", "--to", "Asha", "--message", "while sync stops")
+        procs.append(second)
+        out, err = first.communicate(timeout=30)
+        assert first.returncode == 0 and json.loads(out)["data"]["server_id"], err
+        out, err = second.communicate(timeout=60)
+        assert second.returncode == 0 and json.loads(out)["data"]["server_id"], err
+        sync.wait(timeout=30)
+    finally:
+        for proc in procs:
+            proc.kill()
+    assert fake.peak_open_relays == 1, "two relay connections were open at once"
+    assert not (store / "sync-control.json").exists()
 
 
 def test_send_file_and_download_media(fake, store, cli, logged_in, tmp_path):

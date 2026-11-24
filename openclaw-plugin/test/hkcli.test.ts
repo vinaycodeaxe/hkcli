@@ -25,16 +25,16 @@ describe("hkcli version", () => {
     assert.equal(parseHkcliVersion(""), undefined);
   });
 
-  it("requires 0.3.0 or newer, comparing numerically", () => {
-    assert.equal(isSupportedHkcliVersion("0.2.9"), false);
-    assert.equal(isSupportedHkcliVersion("0.3.0"), true);
+  it("requires 0.4.0 or newer, comparing numerically", () => {
+    assert.equal(isSupportedHkcliVersion("0.3.1"), false);
+    assert.equal(isSupportedHkcliVersion("0.4.0"), true);
     assert.equal(isSupportedHkcliVersion("0.10.0"), true);
     assert.equal(isSupportedHkcliVersion("1.0.0"), true);
   });
 
   it("probes the binary", async () => {
-    assert.deepEqual(await probeHkcliVersion(fakeHkcli, { env: fakeEnv({}) }), { ok: true, version: "0.3.0" });
-    const old = await probeHkcliVersion(fakeHkcli, { env: fakeEnv({ FAKE_HKCLI_VERSION: "0.2.0" }) });
+    assert.deepEqual(await probeHkcliVersion(fakeHkcli, { env: fakeEnv({}) }), { ok: true, version: "0.4.0" });
+    const old = await probeHkcliVersion(fakeHkcli, { env: fakeEnv({ FAKE_HKCLI_VERSION: "0.3.1" }) });
     assert.equal(old.ok, false);
     assert.equal(!old.ok && old.reason, "too-old");
     assert.match(!old.ok ? old.message : "", /go install github\.com\/vinaycodeaxe\/hkcli\/cmd\/hkcli@latest/);

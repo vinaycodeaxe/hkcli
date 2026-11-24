@@ -7,16 +7,28 @@ section for each tagged version into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-24
+
+### Fixed
+
+- While `hkcli sync` runs, `send`, `chats mark-read` and `doctor --connect` on the same store go
+  out through its relay connection instead of opening a second one. After a second connection of
+  the account appeared, Hike could stop delivering messages to the running sync, so they stayed
+  at one tick until it reconnected. This hit the OpenClaw channel, whose replies use
+  `hkcli send`, mostly in groups. The sync records its local endpoint in `sync-control.json`; when
+  it stops, it finishes the sends it took on before it disconnects.
+- OpenClaw channel 0.1.2: changes to bindings, agents and session settings now apply to the next
+  Hike message. Before, they needed a restart of the Hike channel.
+
+### Changed
+
+- OpenClaw channel 0.2.0 needs hkcli 0.4.0 or newer.
+
 ### Added
 
 - Gotchas in the docs, the OpenClaw skill and the channel plugin's readme: logging out in the
   Hike app ends hkcli's login, the app holds one number at a time, Hike limits SMS codes, and the
   channel's PATH, group id, routing and slow-model pitfalls.
-
-### Fixed
-
-- OpenClaw channel 0.1.2: changes to bindings, agents and session settings now apply to the next
-  Hike message. Before, they needed a restart of the Hike channel.
 
 ## [0.3.1] - 2026-11-23
 
