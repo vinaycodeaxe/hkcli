@@ -14,10 +14,13 @@ import (
 	"github.com/vinaycodeaxe/hkcli/internal/mqtt"
 )
 
+type controlPublisher = func(ctx context.Context, payload []byte, qos byte) controlResponse
+
 func startControl(t *testing.T, publish controlPublisher) (path string, stop func()) {
 	t.Helper()
 	path = filepath.Join(t.TempDir(), "sync-control.json")
-	stop, err := serveControl(context.Background(), path, publish, func() bool { return true })
+	hooks := controlHooks{publish: publish, connected: func() bool { return true }, stopping: func() bool { return false }}
+	stop, err := serveControl(context.Background(), path, hooks)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,22 +105,50 @@ func TestPublishViaSyncReportsAPublishThatMayHaveGoneOut(t *testing.T) {
 }
 
 func TestPublishWaitsUntilAStoppingSyncHasGone(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	path := filepath.Join(t.TempDir(), "sync-control.json")
-	stop, err := serveControl(ctx, path, func(context.Context, []byte, byte) controlResponse {
-		t.Error("a stopping sync took a new publish")
-		return controlResponse{}
-	}, func() bool { return true })
-	if err != nil {
-		t.Fatal(err)
+	// The sync's relay connection may still be finishing a publish while it stops.
+	for _, how := range []string{"interrupted", "idle exit"} {
+		t.Run(how, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var closing atomic.Bool
+			path := filepath.Join(t.TempDir(), "sync-control.json")
+			stop, err := serveControl(ctx, path, controlHooks{
+				publish: func(context.Context, []byte, byte) controlResponse {
+					t.Error("a stopping sync took a new publish")
+					return controlResponse{}
+				},
+				connected: func() bool { return true },
+				stopping:  closing.Load,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(stop)
+			if how == "interrupted" {
+				cancel()
+			} else {
+				closing.Store(true)
+			}
+			var stopped atomic.Bool
+			time.AfterFunc(300*time.Millisecond, func() { stopped.Store(true); stop() })
+			_, handled, err := PublishViaSync(context.Background(), path, []byte("{}"), 1)
+			if handled || err != nil || !stopped.Load() {
+				t.Fatalf("handled=%v err=%v stopped=%v; want a fallback only once the sync has gone", handled, err, stopped.Load())
+			}
+		})
 	}
-	t.Cleanup(stop)
-	cancel() // stopping: the sync's relay connection may still be finishing a publish
-	var stopped atomic.Bool
-	time.AfterFunc(300*time.Millisecond, func() { stopped.Store(true); stop() })
-	_, handled, err := PublishViaSync(context.Background(), path, []byte("{}"), 1)
-	if handled || err != nil || !stopped.Load() {
-		t.Fatalf("handled=%v err=%v stopped=%v; want a fallback only once the sync has gone", handled, err, stopped.Load())
+}
+
+func TestControlPublishSaysStoppingOnceTheSyncCloses(t *testing.T) {
+	// A request admitted just before the sync began to close its relay connection.
+	closing := &Syncer{stopping: true}
+	if resp := closing.controlPublish(context.Background(), []byte("{}"), 1); !resp.Stopping || resp.Sent {
+		t.Errorf("closing for good: %+v; want stopping, nothing sent", resp)
+	}
+	interrupted, cancel := context.WithCancel(context.Background())
+	cancel()
+	if resp := (&Syncer{}).controlPublish(interrupted, []byte("{}"), 1); !resp.Stopping || resp.Sent {
+		t.Errorf("interrupted: %+v; want stopping, nothing sent", resp)
 	}
 }
 

@@ -158,9 +158,10 @@ type Syncer struct {
 	me            string
 	out           *Emitter
 	opts          Options
-	clientMu      sync.Mutex // guards client and publishing, used by control requests (control.go)
+	clientMu      sync.Mutex // guards client, publishing and stopping, used by control requests (control.go)
 	client        *mqtt.Client
 	publishing    int
+	stopping      bool
 	groupsFetched map[string]bool
 }
 
@@ -992,7 +993,8 @@ func (s *Syncer) Follow(ctx context.Context, idleExit, maxReconnect *time.Durati
 		s.setClient(client)
 		downSince = time.Time{}
 		reason, err := s.listen(ctx, client, &first, &backoff, idleExit)
-		s.setClient(nil) // control requests now wait for the next connection
+		// Control requests wait for the next connection, or for this sync to go when it stops.
+		s.detachClient(ctx.Err() != nil || reason != "" || err != nil && !retryable(err))
 		s.drainPublishes(controlDrainTimeout)
 		if err != nil && ctx.Err() == nil && retryable(err) {
 			s.out.Status(fmt.Sprintf("connection lost (%v); reconnecting in %.0fs", err, backoff.Seconds()))

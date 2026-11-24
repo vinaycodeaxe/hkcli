@@ -64,16 +64,23 @@ const (
 	maxControlRequest   = 8 << 20
 )
 
-type controlPublisher func(ctx context.Context, payload []byte, qos byte) controlResponse
-
-// ServeControl lets other hkcli commands on this store publish over the sync's relay
-// connection. Once ctx ends it answers that the sync is stopping, until stop is called after
-// the relay connection closed; stop removes the endpoint recorded in path.
-func (s *Syncer) ServeControl(ctx context.Context, path string) (stop func(), err error) {
-	return serveControl(ctx, path, s.controlPublish, s.relayConnected)
+// controlHooks is what the endpoint needs from the sync (tests pass fakes).
+type controlHooks struct {
+	publish   func(ctx context.Context, payload []byte, qos byte) controlResponse
+	connected func() bool
+	// stopping reports that the sync is closing its relay connection for good.
+	stopping func() bool
 }
 
-func serveControl(ctx context.Context, path string, publish controlPublisher, connected func() bool) (func(), error) {
+// ServeControl lets other hkcli commands on this store publish over the sync's relay
+// connection. Once ctx ends or Follow is closing its relay connection for good, it answers
+// that the sync is stopping, until stop is called after the relay connection closed; stop
+// removes the endpoint recorded in path.
+func (s *Syncer) ServeControl(ctx context.Context, path string) (stop func(), err error) {
+	return serveControl(ctx, path, controlHooks{publish: s.controlPublish, connected: s.relayConnected, stopping: s.isStopping})
+}
+
+func serveControl(ctx context.Context, path string, hooks controlHooks) (func(), error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -106,7 +113,7 @@ func serveControl(ctx context.Context, path string, publish controlPublisher, co
 			handlers.Add(1)
 			go func() {
 				defer handlers.Done()
-				serveControlConn(ctx, conn, endpoint.Token, publish, connected)
+				serveControlConn(ctx, conn, endpoint.Token, hooks)
 			}()
 		}
 	}()
@@ -125,7 +132,7 @@ func serveControl(ctx context.Context, path string, publish controlPublisher, co
 	return stop, nil
 }
 
-func serveControlConn(ctx context.Context, conn net.Conn, token string, publish controlPublisher, connected func() bool) {
+func serveControlConn(ctx context.Context, conn net.Conn, token string, hooks controlHooks) {
 	defer conn.Close()
 	// Clients write their request at once; a silent one must not hold up a stopping sync.
 	_ = conn.SetDeadline(time.Now().Add(controlRequestTimeout))
@@ -141,12 +148,12 @@ func serveControlConn(ctx context.Context, conn net.Conn, token string, publish 
 		resp.Error = "malformed request"
 	case subtle.ConstantTimeCompare([]byte(req.Token), []byte(token)) != 1:
 		resp.Error = "wrong control token"
-	case ctx.Err() != nil:
+	case ctx.Err() != nil || hooks.stopping():
 		resp.Error, resp.Stopping = "sync is stopping", true
 	case req.Op == "status":
-		resp.OK, resp.Connected = true, connected()
+		resp.OK, resp.Connected = true, hooks.connected()
 	case req.Op == "publish":
-		resp = publish(ctx, []byte(req.Payload), req.QoS)
+		resp = hooks.publish(ctx, []byte(req.Payload), req.QoS)
 	default:
 		resp.Error = "unknown operation " + strconv.Quote(req.Op)
 	}
@@ -173,16 +180,35 @@ func (s *Syncer) relayConnected() bool {
 	return client != nil && client.Connected()
 }
 
-// acquireClient returns the connected relay client and counts a publish on it, so Follow can
-// let that publish finish before it closes the connection (see drainPublishes).
-func (s *Syncer) acquireClient() *mqtt.Client {
+// detachClient keeps control requests off the relay connection Follow is closing. final marks
+// the sync as stopping for good, so requests wait for it to go instead of connecting on their
+// own while that connection is still open.
+func (s *Syncer) detachClient(final bool) {
+	s.clientMu.Lock()
+	s.client = nil
+	s.stopping = s.stopping || final
+	s.clientMu.Unlock()
+}
+
+func (s *Syncer) isStopping() bool {
 	s.clientMu.Lock()
 	defer s.clientMu.Unlock()
+	return s.stopping
+}
+
+// acquireClient returns the connected relay client and counts a publish on it, so Follow can
+// let that publish finish before it closes the connection (see drainPublishes).
+func (s *Syncer) acquireClient() (client *mqtt.Client, stopping bool) {
+	s.clientMu.Lock()
+	defer s.clientMu.Unlock()
+	if s.stopping {
+		return nil, true
+	}
 	if s.client == nil || !s.client.Connected() {
-		return nil
+		return nil, false
 	}
 	s.publishing++
-	return s.client
+	return s.client, false
 }
 
 func (s *Syncer) releaseClient() {
@@ -192,7 +218,7 @@ func (s *Syncer) releaseClient() {
 }
 
 // drainPublishes waits up to timeout for publishes other commands started on the connection
-// that is being closed. Call it after setClient(nil), so no new ones start.
+// that is being closed. Call it after detachClient, so no new ones start.
 func (s *Syncer) drainPublishes(timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -210,9 +236,17 @@ func (s *Syncer) drainPublishes(timeout time.Duration) {
 // reconnecting. Once the publish started, a failure means the message may have been sent. The
 // publish is not tied to ctx: a sync that is stopping still finishes it (drainPublishes).
 func (s *Syncer) controlPublish(ctx context.Context, payload []byte, qos byte) controlResponse {
+	stopping := controlResponse{Error: "sync is stopping", Stopping: true}
 	deadline := time.Now().Add(controlConnectWait)
 	for {
-		if client := s.acquireClient(); client != nil {
+		if ctx.Err() != nil {
+			return stopping
+		}
+		client, closing := s.acquireClient()
+		switch {
+		case closing:
+			return stopping
+		case client != nil:
 			publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), controlPublishTimeout)
 			serverID, err := publishPayload(publishCtx, client, s.me, payload, qos)
 			cancel()
@@ -221,9 +255,12 @@ func (s *Syncer) controlPublish(ctx context.Context, payload []byte, qos byte) c
 				return controlResponse{Sent: true, Error: err.Error()}
 			}
 			return controlResponse{OK: true, Sent: true, ServerID: serverID}
-		}
-		if !time.Now().Before(deadline) || wait(ctx, 100*time.Millisecond) != nil {
+		case !time.Now().Before(deadline):
+			// Reconnecting: no relay connection is open, so the caller may use one of its own.
 			return controlResponse{Error: "sync is not connected to Hike right now"}
+		}
+		if wait(ctx, 100*time.Millisecond) != nil {
+			return stopping
 		}
 	}
 }
