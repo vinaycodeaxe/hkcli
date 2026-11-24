@@ -436,3 +436,36 @@ func TestOpeningARelayConnectionNeedsTheRelayLock(t *testing.T) {
 		}
 	}
 }
+
+func TestACommandOnItsOwnConnectionKeepsToItsBudget(t *testing.T) {
+	// Hike's relay takes the connection but never answers.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			if _, err := ln.Accept(); err != nil {
+				return
+			}
+		}
+	}()
+	t.Setenv("HKCLI_MQTT_WS", "ws://"+ln.Addr().String()+"/mqtt")
+	saved := publishBudget
+	publishBudget = controlTeardownTimeout + 300*time.Millisecond
+	t.Cleanup(func() { publishBudget = saved })
+	st := store.New(t.TempDir())
+	connect := func() (*api.Client, error) {
+		return api.New(st, &store.Session{UserID: "1001", AccessToken: "t"}), nil
+	}
+	start := time.Now()
+	_, via, err := PublishOnStore(context.Background(), st, connect, []byte("{}"))
+	var unavailable *RelayUnavailableError
+	if via != ViaOwn || !errors.As(err, &unavailable) {
+		t.Fatalf("via=%q err=%v; want RelayUnavailableError (nothing sent) on its own connection", via, err)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("took %v; want it to give up within its budget", took)
+	}
+}

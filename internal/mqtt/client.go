@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -33,8 +34,8 @@ type Client struct {
 	ws       *websocket.Conn
 	reader   PacketReader
 	early    []Packet
-	sendMu   sync.Mutex
-	lastSend time.Time
+	sendSlot chan struct{} // held while a frame is written: one write at a time
+	lastSend atomic.Int64  // when the last write finished, in Unix nanoseconds
 
 	mu        sync.Mutex
 	pending   map[uint16]*waiter
@@ -71,6 +72,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		return newError(KindError, "cannot open MQTT websocket %s: %v", c.URL, err)
 	}
 	c.ws = ws
+	c.sendSlot = make(chan struct{}, 1)
 	c.pending = map[uint16]*waiter{}
 	c.notify = make(chan struct{}, 1)
 	c.readerEnd = make(chan struct{})
@@ -229,9 +231,7 @@ func (c *Client) keepalive() {
 			}
 			continue
 		}
-		c.sendMu.Lock()
-		idle := now.Sub(c.lastSend)
-		c.sendMu.Unlock()
+		idle := now.Sub(time.Unix(0, c.lastSend.Load()))
 		if c.Keepalive > 0 && idle >= c.Keepalive*3/4 {
 			c.mu.Lock()
 			c.pingSent = now
@@ -391,7 +391,8 @@ func (c *Client) Subscribe(ctx context.Context, topic string, qos byte) (byte, e
 	if err != nil {
 		return 0, err
 	}
-	if err := c.rawSend(encodeSubscribe(id, topic, qos)); err != nil {
+	if err := c.send(ctx, encodeSubscribe(id, topic, qos)); err != nil {
+		c.forget(id)
 		return 0, err
 	}
 	result, err := c.wait(ctx, id, w, 10*time.Second, "SUBACK")
@@ -406,16 +407,19 @@ func (c *Client) Subscribe(ctx context.Context, topic string, qos byte) (byte, e
 }
 
 // Publish sends payload to topic. For QoS 1 it waits up to timeout for the
-// PUBACK and returns Hike's payload from it (nil when there is none).
+// PUBACK and returns Hike's payload from it (nil when there is none). When ctx
+// ends while another write still holds the connection, it gives up before
+// writing anything.
 func (c *Client) Publish(ctx context.Context, topic string, payload []byte, qos byte, timeout time.Duration) ([]byte, error) {
 	if qos == 0 {
-		return nil, c.rawSend(encodePublish(topic, payload, 0, 0))
+		return nil, c.send(ctx, encodePublish(topic, payload, 0, 0))
 	}
 	id, w, err := c.register()
 	if err != nil {
 		return nil, err
 	}
-	if err := c.rawSend(encodePublish(topic, payload, 1, id)); err != nil {
+	if err := c.send(ctx, encodePublish(topic, payload, 1, id)); err != nil {
+		c.forget(id)
 		return nil, err
 	}
 	result, err := c.wait(ctx, id, w, timeout, "PUBACK")
@@ -423,23 +427,54 @@ func (c *Client) Publish(ctx context.Context, topic string, payload []byte, qos 
 	return ack, err
 }
 
-func (c *Client) rawSend(data []byte) error {
+func (c *Client) forget(id uint16) {
+	c.mu.Lock()
+	delete(c.pending, id)
+	c.mu.Unlock()
+}
+
+// rawSend writes a frame the client sends on its own behalf.
+func (c *Client) rawSend(data []byte) error { return c.send(context.Background(), data) }
+
+// send writes one frame. It waits for the connection's write slot only while ctx lasts, so a
+// queued frame is never written after its caller gave up. A write that started is not cut short
+// by ctx: a partial frame would break the connection for everyone using it.
+func (c *Client) send(ctx context.Context, data []byte) error {
 	c.mu.Lock()
 	closed, reason := c.closed, c.reason
 	c.mu.Unlock()
 	if c.ws == nil || closed {
 		return newError(KindDisconnected, "%s", orDefault(reason, "not connected"))
 	}
-	c.sendMu.Lock()
+	if err := c.acquireSendSlot(ctx); err != nil {
+		return err
+	}
 	_ = c.ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	err := c.ws.WriteMessage(websocket.BinaryMessage, data)
 	if err == nil {
-		c.lastSend = time.Now()
+		c.lastSend.Store(time.Now().UnixNano())
 	}
-	c.sendMu.Unlock()
+	<-c.sendSlot
 	if err != nil {
 		c.ws.Close() // a partial write corrupts the stream; let the reader wind down
 		return newError(KindDisconnected, "send failed: %v", err)
+	}
+	return nil
+}
+
+// acquireSendSlot waits for the write slot until ctx ends; an ended ctx never gets it.
+func (c *Client) acquireSendSlot(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case c.sendSlot <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		<-c.sendSlot
+		return err
 	}
 	return nil
 }

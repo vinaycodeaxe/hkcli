@@ -85,6 +85,9 @@ func publishPayload(ctx context.Context, client *mqtt.Client, me string, payload
 		if err == nil {
 			return string([]rune(string(ack))), nil // invalid UTF-8 becomes U+FFFD
 		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", &mqtt.Error{Kind: mqtt.KindTimeout, Msg: "Hike did not confirm delivery in time; the message may or may not have been sent"}
+		}
 		if !mqtt.IsKind(err, mqtt.KindTimeout) {
 			return "", err
 		}
@@ -92,6 +95,9 @@ func publishPayload(ctx context.Context, client *mqtt.Client, me string, payload
 			return "", &mqtt.Error{Kind: mqtt.KindTimeout, Msg: fmt.Sprintf("Hike did not confirm delivery after %d attempts; the message may or may not have been sent", attempts)}
 		}
 		if err := wait(ctx, min(4*time.Second, time.Second<<attempt)); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return "", &mqtt.Error{Kind: mqtt.KindTimeout, Msg: "Hike did not confirm delivery in time; the message may or may not have been sent"}
+			}
 			return "", err
 		}
 	}
@@ -419,7 +425,7 @@ func (s *Syncer) catchUpChat(ctx context.Context, chatID string, missed span) (a
 	}
 	pages := s.opts.MaxPages
 	if !initialized {
-		pages, missed = 1, span{} // its first page can hold older history too
+		pages = 1 // the rest is left to backfill; missed still leaves out older history
 	}
 	var cursor any
 	for range pages {

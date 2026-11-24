@@ -31,8 +31,10 @@ section for each tagged version into the GitHub release notes.
 
 - `send` and `chats mark-read` report in their `--json` output how the message went out: `via` is
   `sync` (through the running sync) or `own` (on a connection of its own).
-- Error code `relay_unavailable`: another hkcli process kept the store's relay connection busy.
-  Nothing was sent, so trying again is safe; the OpenClaw channel treats it that way.
+- Error code `relay_unavailable`: hkcli could not get the store's relay connection (another hkcli
+  process kept it busy, or Hike's relay could not be reached). Nothing was sent, so trying again
+  is safe; the OpenClaw channel treats it that way. A send that cannot connect to Hike's relay
+  used to fail with `relay_error`, which says the message may have gone out.
 - The `sync` event counts `late` messages: messages sent while the connection was listening that
   arrived only through the catch-up after it reconnected, a sign that Hike had stopped delivering
   to it. The OpenClaw channel logs a warning for them.

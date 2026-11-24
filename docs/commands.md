@@ -76,7 +76,7 @@ On failure:
 | `no_media` | The message has nothing to download |
 | `login_failed` | The QR or SMS login did not complete |
 | `relay_error` | The live connection to Hike failed; a message may or may not have been sent |
-| `relay_unavailable` | Another hkcli process kept this store's relay connection busy; nothing was sent |
+| `relay_unavailable` | hkcli could not get this store's relay connection: another hkcli process kept it busy, or Hike's relay could not be reached. Nothing was sent |
 | `error` | An unexpected failure, such as a disk error |
 | anything else | Hike's own error code, or `hike_error` |
 

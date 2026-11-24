@@ -434,7 +434,7 @@ const NOT_SENT_CODES = new Set([
   "aborted",
   "hkcli_missing",
   "spawn_failed",
-  // Another hkcli process kept the store's relay connection busy; trying again later is safe.
+  // hkcli could not get the store's relay connection (busy, or Hike unreachable); retrying is safe.
   "relay_unavailable",
 ]);
 

@@ -40,17 +40,18 @@ import (
 //
 // Time budget (the OpenClaw channel's limits in brackets): a command gives up waiting for an
 // owner after publishBudget - controlHandoffTimeout and then still allows one hand-off, so it
-// finishes within publishBudget (75 s) [send timeout 90 s]. A hand-off carries its remaining
-// budget; the sync waits at most controlConnectWait for a reconnecting relay and publishes within
-// that budget, so it never outlives the command. On closing a connection, the sync waits up to
-// controlDrainTimeout (25 s) for hand-offs, then closes it within controlTeardownTimeout (5 s);
-// on stop, the endpoint then lets requests still being read finish (controlRequestTimeout, 10 s):
-// 40 s in all [stop grace 45 s].
+// finishes within publishBudget (75 s) [send timeout 90 s]; on a connection of its own it
+// connects and publishes within publishBudget - controlTeardownTimeout and then disconnects. A
+// hand-off carries its remaining budget; the sync waits at most controlConnectWait for a
+// reconnecting relay and publishes within that budget, so it never outlives the command. On
+// closing a connection, the sync waits up to controlDrainTimeout (25 s) for hand-offs, then
+// closes it within controlTeardownTimeout (5 s); on stop, the endpoint then lets requests still
+// being read finish (controlRequestTimeout, 10 s): 40 s in all [stop grace 45 s].
 
 const (
 	controlProtocol        = 2
 	controlDialTimeout     = 2 * time.Second
-	controlRequestTimeout  = 10 * time.Second // each request line must arrive within this
+	controlRequestTimeout  = 10 * time.Second // a request, handshake included, must arrive within this
 	controlConnectWait     = 10 * time.Second // a hand-off waits this long for a reconnecting relay
 	controlPublishTimeout  = 30 * time.Second // publish budget for clients that send none (hkcli 0.4.0)
 	controlHandoffTimeout  = 50 * time.Second // a command waits this long for the sync's answer
@@ -73,8 +74,8 @@ const (
 	ViaOwn  = "own"  // on a short-lived connection of this command's own
 )
 
-// RelayUnavailableError means nothing was sent: another hkcli process owns this store's relay
-// connection and did not take the packet in time.
+// RelayUnavailableError means nothing was sent: another hkcli process kept this store's relay
+// connection busy, or this command could not connect to Hike's relay in time.
 type RelayUnavailableError struct{ Msg string }
 
 func (e *RelayUnavailableError) Error() string { return e.Msg }
@@ -224,7 +225,8 @@ func serveControl(ctx context.Context, path string, hooks controlHooks) (func(),
 func serveControlConn(ctx context.Context, conn net.Conn, token string, hooks controlHooks) {
 	defer conn.Close()
 	reader := bufio.NewReader(io.LimitReader(conn, maxControlRequest+maxControlResponse))
-	// Commands write each line at once; a silent connection must not hold up a stopping sync.
+	// Commands write each line at once. The whole request, handshake included, must arrive in
+	// time, so a silent connection cannot hold up a stopping sync for longer.
 	_ = conn.SetDeadline(time.Now().Add(controlRequestTimeout))
 	var req controlRequest
 	if readControlLine(reader, &req) != nil {
@@ -240,7 +242,6 @@ func serveControlConn(ctx context.Context, conn net.Conn, token string, hooks co
 		if writeControlLine(conn, controlHello{V: controlProtocol, Proof: controlProof(token, "sync", req.Nonce), Nonce: nonce}) != nil {
 			return
 		}
-		_ = conn.SetDeadline(time.Now().Add(controlRequestTimeout))
 		req = controlRequest{}
 		if readControlLine(reader, &req) != nil {
 			return
@@ -458,7 +459,10 @@ func PublishOnStore(ctx context.Context, st *store.Store, connect func() (*api.C
 		}
 		if lease != nil {
 			defer lease.Release()
-			serverID, err := publishOnOwnConnection(ctx, connect, lease, payload)
+			// Connect and publish within the budget; closing the connection takes the rest.
+			ownCtx, cancel := context.WithDeadline(ctx, start.Add(publishBudget-controlTeardownTimeout))
+			defer cancel()
+			serverID, err := publishOnOwnConnection(ownCtx, connect, lease, payload)
 			return serverID, ViaOwn, err
 		}
 		if !fits {
@@ -478,6 +482,8 @@ func PublishOnStore(ctx context.Context, st *store.Store, connect func() (*api.C
 	}
 }
 
+// publishOnOwnConnection connects under lease and publishes before ctx's deadline; closing the
+// connection afterwards takes at most controlTeardownTimeout more. A failed connect sent nothing.
 func publishOnOwnConnection(ctx context.Context, connect func() (*api.Client, error), lease *RelayLease, payload []byte) (string, error) {
 	client, err := connect()
 	if err != nil {
@@ -485,9 +491,17 @@ func publishOnOwnConnection(ctx context.Context, connect func() (*api.Client, er
 	}
 	relay, err := OpenMQTT(ctx, client, lease)
 	if err != nil {
+		var relayErr *mqtt.Error
+		if errors.As(err, &relayErr) || errors.Is(err, context.DeadlineExceeded) {
+			return "", &RelayUnavailableError{Msg: fmt.Sprintf("cannot connect to Hike's relay (%v); nothing was sent", err)}
+		}
 		return "", err
 	}
-	defer relay.Disconnect()
+	defer func() {
+		watchdog := time.AfterFunc(controlTeardownTimeout, relay.Close)
+		relay.Disconnect()
+		watchdog.Stop()
+	}()
 	return publishPayload(ctx, relay, client.Session.UserID, payload, 1)
 }
 
@@ -529,10 +543,11 @@ func SyncRelayStatus(ctx context.Context, path string, owner int) (connected, ok
 	return resp.Connected, true
 }
 
-// callControl authenticates both sides, then sends one request. sent reports whether the request
-// reached the sync: until then nothing of it was disclosed or acted on.
+// callControl authenticates both sides, then sends one request, all within budget. sent reports
+// whether the request reached the sync: until then nothing of it was disclosed or acted on.
 func callControl(ctx context.Context, endpoint controlEndpoint, req controlRequest, budget time.Duration) (resp controlResponse, sent bool, err error) {
-	dialer := net.Dialer{Timeout: controlDialTimeout}
+	deadline := time.Now().Add(budget)
+	dialer := net.Dialer{Timeout: controlDialTimeout, Deadline: deadline}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(endpoint.Port)))
 	if err != nil {
 		return resp, false, err
@@ -541,7 +556,11 @@ func callControl(ctx context.Context, endpoint controlEndpoint, req controlReque
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	reader := bufio.NewReader(io.LimitReader(conn, maxControlResponse))
-	_ = conn.SetDeadline(time.Now().Add(controlRequestTimeout))
+	handshakeBy := time.Now().Add(controlRequestTimeout)
+	if deadline.Before(handshakeBy) {
+		handshakeBy = deadline
+	}
+	_ = conn.SetDeadline(handshakeBy)
 	nonce, err := randomHex(controlNonceBytes)
 	if err != nil {
 		return resp, false, err
@@ -559,9 +578,14 @@ func callControl(ctx context.Context, endpoint controlEndpoint, req controlReque
 	req.Auth = controlProof(endpoint.Token, "command", hello.Nonce)
 	req.Token = ""
 	if req.Op == "publish" {
-		req.BudgetMS = (budget - controlTeardownTimeout).Milliseconds()
+		// The sync must be done, its answer included, before this command stops waiting.
+		left := time.Until(deadline) - controlTeardownTimeout
+		if left < time.Second {
+			return resp, false, errors.New("no time left to hand the message to the running hkcli sync")
+		}
+		req.BudgetMS = left.Milliseconds()
 	}
-	_ = conn.SetDeadline(time.Now().Add(budget))
+	_ = conn.SetDeadline(deadline)
 	// The sync acts only on a complete line, so a failed write sent nothing.
 	if err := writeControlLine(conn, req); err != nil {
 		return resp, false, err

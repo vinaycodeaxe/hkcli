@@ -45,8 +45,9 @@ hkcli store. `sync --json` then reports `late` messages in its `sync` events aft
 
 ## "relay_unavailable"
 
-Another hkcli process on this store kept its relay connection busy for about 25 seconds, so the
-command sent nothing. Try again. If it keeps happening, check for a stuck hkcli process.
+hkcli could not get this store's relay connection, so the command sent nothing: another hkcli
+process kept it busy for about 25 seconds, or Hike's relay could not be reached. Try again. If it
+keeps happening, check the network and look for a stuck hkcli process.
 
 ## "another hkcli process is already running sync"
 
