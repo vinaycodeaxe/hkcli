@@ -49,24 +49,28 @@ import (
 // being read finish (controlRequestTimeout, 10 s): 40 s in all [stop grace 45 s].
 
 const (
-	controlProtocol        = 2
-	controlDialTimeout     = 2 * time.Second
-	controlRequestTimeout  = 10 * time.Second // a request, handshake included, must arrive within this
-	controlConnectWait     = 10 * time.Second // a hand-off waits this long for a reconnecting relay
-	controlPublishTimeout  = 30 * time.Second // publish budget for clients that send none (hkcli 0.4.0)
-	controlHandoffTimeout  = 50 * time.Second // a command waits this long for the sync's answer
-	controlStatusTimeout   = 5 * time.Second
-	controlDrainTimeout    = 25 * time.Second // a closing connection waits this long for hand-offs
-	controlTeardownTimeout = 5 * time.Second  // then closes within this
-	controlRetryInterval   = 250 * time.Millisecond
-	controlNonceBytes      = 16
-	maxControlRequest      = 8 << 20
-	maxControlResponse     = 64 << 10
+	controlProtocol       = 2
+	controlDialTimeout    = 2 * time.Second
+	controlRequestTimeout = 10 * time.Second // a request, handshake included, must arrive within this
+	controlConnectWait    = 10 * time.Second // a hand-off waits this long for a reconnecting relay
+	controlPublishTimeout = 30 * time.Second // publish budget for clients that send none (hkcli 0.4.0)
+	controlHandoffTimeout = 50 * time.Second // a command waits this long for the sync's answer
+	controlStatusTimeout  = 5 * time.Second
+	controlRetryInterval  = 250 * time.Millisecond
+	controlNonceBytes     = 16
+	maxControlRequest     = 8 << 20
+	maxControlResponse    = 64 << 10
 )
 
-// publishBudget bounds a command's whole publish, including waiting for a sync that is
-// starting, reconnecting or stopping (a variable so tests can shorten it).
-var publishBudget = 75 * time.Second
+// Variables so tests can shorten them.
+var (
+	// publishBudget bounds a command's whole publish, including waiting for a sync that is
+	// starting, reconnecting or stopping.
+	publishBudget = 75 * time.Second
+	// A closing connection waits this long for hand-offs, then closes within the teardown time.
+	controlDrainTimeout    = 25 * time.Second
+	controlTeardownTimeout = 5 * time.Second
+)
 
 // How a command's packet went out (the "via" field of send and mark-read output).
 const (

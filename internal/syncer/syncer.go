@@ -177,6 +177,7 @@ type Syncer struct {
 	ownsRelay     bool      // Follow holds the store's relay lock
 	liveSince     time.Time // when the current relay connection began listening (zero until it does)
 	missed        span      // while the last listening connection should have received everything
+	lateStored    int       // late messages stored by catch-ups that failed later, not reported yet
 	groupsFetched map[string]bool
 }
 
@@ -564,7 +565,7 @@ func (s *Syncer) isStale(chat chatInfo) (bool, error) {
 
 // Counts summarizes a catch-up. Late counts new messages from others that were sent while the
 // previous relay connection was listening: they should have arrived on it, so Hike had stopped
-// delivering to it (see control.go).
+// delivering to it (see control.go). It includes ones that failed catch-ups stored before.
 type Counts struct {
 	Contacts, Chats, ChatsFetched, Messages, Receipts, Late int
 }
@@ -624,7 +625,7 @@ func (s *Syncer) CatchUp(ctx context.Context, contacts bool) (Counts, error) {
 	for _, chat := range stale {
 		n, late, err := s.catchUpChat(ctx, chat.id, s.missed)
 		counts.Messages += n
-		counts.Late += late
+		s.lateStored += late // stored even if a later page or chat fails
 		if err != nil {
 			return counts, err
 		}
@@ -643,6 +644,7 @@ func (s *Syncer) CatchUp(ctx context.Context, contacts bool) (Counts, error) {
 		}
 		counts.Receipts = n
 	}
+	counts.Late, s.lateStored = s.lateStored, 0
 	s.out.Emit("sync", counts.Pairs()...)
 	return counts, nil
 }
