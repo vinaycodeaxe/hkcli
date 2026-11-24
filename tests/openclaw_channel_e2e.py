@@ -4,7 +4,8 @@ Installs the packed plugin into an isolated OpenClaw state dir, links the agent'
 through `openclaw channels login` (the fake confirms the QR login by itself) and runs a real
 `openclaw gateway`. Then, over the fake relay: an unknown sender's DM gets the pairing reply;
 approving it through the Gateway with notify (the Control UI path) sends the confirmation and the
-sender's next DM reaches the agent; in an allowed group only the @mention reaches the agent.
+sender's next DM reaches the agent; in an allowed group only the @mention reaches the agent. A
+binding added while the Gateway runs routes the next DM to another agent without a restart.
 The Gateway is then killed hard: the next run must stop the hkcli sync it left behind. A DM that
 hkcli stores while the Gateway is down must reach the agent after a restart, and no earlier DM may
 be answered twice. Finally `channels logout` signs the device out, and no hkcli sync may be left
@@ -99,6 +100,17 @@ def processed(log_file: Path, chat: str) -> list[str]:
     """Message ids of the `message processed` diagnostics for `chat`."""
     text = log_file.read_text(errors="replace") if log_file.exists() else ""
     return re.findall(rf"message processed: channel=hike chatId=\S*{re.escape(chat)}\b messageId=(\S+)", text)
+
+
+def session_key(log_file: Path, chat: str, message_id: str) -> str | None:
+    """The session (`agent:<agent id>:...`) that handled `message_id`, from its diagnostic."""
+    text = log_file.read_text(errors="replace") if log_file.exists() else ""
+    match = re.search(
+        rf"message processed: channel=hike chatId=\S*{re.escape(chat)}\b messageId={re.escape(message_id)} "
+        r"sessionId=\S+ sessionKey=(\S+)",
+        text,
+    )
+    return match.group(1) if match else None
 
 
 def relay_subscribed(fake: FakeHike) -> bool:
@@ -232,6 +244,8 @@ def main() -> int:
         run([openclaw, "config", "set", "channels.hike.enabled", "true", "--strict-json"], env)
         run([openclaw, "config", "set", "channels.hike.cliPath", hkcli], env)
         run([openclaw, "config", "set", "channels.hike.groups", json.dumps({GROUP: {"allowFrom": ["*"]}}), "--strict-json"], env)
+        # "main" stays the default agent; "helper" only gets Hike once a binding routes it there.
+        run([openclaw, "config", "set", "agents.entries", json.dumps({"main": {}, "helper": {}}), "--strict-json"], env)
 
         run([openclaw, "channels", "login", "--channel", "hike"], env, timeout=180)
         session = store / "session.json"
@@ -275,10 +289,14 @@ def main() -> int:
         wait_for(lambda: len(sent_to(fake, NEW_PEER)) >= 2, 60, "the approval confirmation")
         log(f"approval confirmation: {sent_to(fake, NEW_PEER)[-1]!r}")
         replies_before = len(sent_to(fake, NEW_PEER))
-        fake.push(dm(NEW_PEER, "thanks!"))
+        thanks = dm(NEW_PEER, "thanks!")
+        fake.push(thanks)
         wait_for(lambda: dispatched(gateway_log, NEW_PEER), 60, "the approved sender's DM to reach the agent")
         if any("Pairing code" in t for t in sent_to(fake, NEW_PEER)[replies_before:]):
             raise SystemExit("approved sender was asked to pair again")
+        key = session_key(gateway_log, NEW_PEER, thanks["s"]) or ""
+        if not key.startswith("agent:main:"):
+            raise SystemExit(f"without a binding the DM should reach the default agent, got session {key!r}")
         log("approved sender's DM was dispatched to the agent")
 
         fake.push(group_message(PEER2, "dinner at 8?", mention_me=False))
@@ -288,6 +306,21 @@ def main() -> int:
         fake.push(group_message(PEER2, "@Me are you joining?", mention_me=True))
         wait_for(lambda: dispatched(gateway_log, GROUP), 60, "the @mention in the group to reach the agent")
         log("group: unmentioned message dropped, @mention dispatched")
+
+        # Bindings reload without restarting the channel, so the next DM must reach the newly bound agent.
+        reload_line = re.compile(r"evaluating reload \([^)]*\bbindings")
+        reloads = len(reload_line.findall(gateway_log.read_text(errors="replace")))
+        binding = {"type": "route", "agentId": "helper", "match": {"channel": "hike"}}
+        run([openclaw, "config", "set", "bindings", json.dumps([binding]), "--strict-json"], env)
+        wait_for(lambda: len(reload_line.findall(gateway_log.read_text(errors="replace"))) > reloads, 60,
+                 "the Gateway to reload the new binding")
+        time.sleep(3)
+        rerouted = dm(NEW_PEER, "who answers now?")
+        fake.push(rerouted)
+        key = wait_for(lambda: session_key(gateway_log, NEW_PEER, rerouted["s"]), 60, "the DM after the binding change to reach an agent")
+        if not key.startswith("agent:helper:"):
+            raise SystemExit(f"a binding added while the Gateway runs was ignored: the DM reached {key}")
+        log(f"a binding added while running took the next DM ({key})")
 
         # A Gateway that dies hard leaves its hkcli sync holding the store; the next run stops it.
         time.sleep(3)

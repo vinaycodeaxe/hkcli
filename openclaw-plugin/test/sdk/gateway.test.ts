@@ -55,6 +55,7 @@ function fakeState() {
 /** Just enough runtime for the inbound handler: every DM is from an unknown sender. */
 function fakeRuntime(state: ReturnType<typeof fakeState>, upsertPairingRequest: () => Promise<unknown>) {
   return {
+    config: { current: () => ({ channels: { hike: {} } }) },
     state: { openKeyedStoreV2: (options: { namespace: string }) => state.openKeyedStoreV2(options) },
     channel: {
       activity: { record: () => {} },

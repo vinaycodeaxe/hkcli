@@ -18,9 +18,12 @@ checked against the live servers.
   `REFRESH_QR` 20 seconds before the code expires. When the phone approves, the server sends
   `LOGIN_CONFIRMED` with `accessToken`, `refreshToken`, `userId` and `profile`.
 - **SMS code.** `POST /auth/v1/initiate` with the number and `deviceType: WEB`, then
-  `POST /auth/v1/verify` with the code.
+  `POST /auth/v1/verify` with the code. Hike sends only a few codes per number; after that
+  `initiate` fails with a message such as `OTP send limit reached` for a while.
 - **Device id.** A random UUID per store (`device.json`), like the `hike_device_id` Hike Web
   keeps in browser storage.
+- **Logout on the phone.** Logging the account out of the Hike app ends its web sessions,
+  hkcli's included: Hike then rejects the token refresh.
 
 ## REST API
 

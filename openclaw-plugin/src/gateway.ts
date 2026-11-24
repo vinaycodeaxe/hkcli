@@ -187,7 +187,7 @@ async function runHikeAccount(
       await collectMissedDirectMessages(createHkcliCatchUpSource(command, account.storeDir, { signal }), since),
     schedule: (key, task) => queue.enqueue(key, task),
     handle: createHikeInboundHandler({
-      cfg: ctx.cfg,
+      readConfig: () => core.config.current({ clone: true }),
       account,
       core,
       log,

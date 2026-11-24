@@ -72,6 +72,19 @@ access token automatically, one process at a time. If Hike rejects the refresh (
 because the session was ended), commands exit with code 3 and `auth status` says the saved
 login no longer works. Run `hkcli auth --force` to link again.
 
+## Gotchas
+
+- **Logging out in the Hike app logs hkcli out too.** When an account is logged out of the Hike
+  app, Hike ends that account's web logins, hkcli's included. Commands then exit with code 3. Run
+  `hkcli auth --force` to link again.
+- **The Hike app holds one number.** Switching the app to another number means logging the first
+  one out, which ends hkcli's login for it. To use a second number in hkcli (for example for an
+  [OpenClaw agent](openclaw-channel.md)) while the app stays on yours, log that number in with an
+  SMS code and keep it out of the app.
+- **SMS codes are limited.** Hike sends only a few codes per number, then refuses with a message
+  such as `OTP send limit reached`. Stop there and try again later, for example the next day;
+  more attempts do not help.
+
 ## More than one account
 
 Each store holds one account. Use a separate store per account:
