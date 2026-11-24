@@ -42,7 +42,7 @@ const command = args
   .join(" ");
 
 if (args.includes("--version")) {
-  process.stdout.write(`hkcli ${env.FAKE_HKCLI_VERSION ?? "0.4.0"}\n`);
+  process.stdout.write(`hkcli ${env.FAKE_HKCLI_VERSION ?? "0.4.1"}\n`);
   process.exit(0);
 }
 
@@ -57,6 +57,9 @@ if (command === "send text") {
   }
   if (mode === "relay_error") {
     fail("relay_error", "Hike did not confirm delivery after 3 attempts; the message may or may not have been sent");
+  }
+  if (mode === "relay_unavailable") {
+    fail("relay_unavailable", "another hkcli process owns this store's relay connection and did not take the message in time; nothing was sent");
   }
   if (mode === "auth") {
     fail("auth_required", "not logged in; run: hkcli auth", 3);

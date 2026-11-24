@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -88,7 +89,8 @@ func (c *Ctx) runDoctor(connect bool) error {
 			check("relay", true, detail)
 		} else {
 			var relayErr *mqtt.Error
-			if !errors.As(err, &relayErr) && !api.IsHikeError(err) {
+			var busy *syncer.RelayUnavailableError
+			if !errors.As(err, &relayErr) && !errors.As(err, &busy) && !api.IsHikeError(err) {
 				return err
 			}
 			check("relay", false, err.Error())
@@ -110,26 +112,50 @@ func (c *Ctx) runDoctor(connect bool) error {
 	return nil
 }
 
-// checkRelay logs in to the relay and subscribes. While a sync runs on this store it asks the
-// sync instead: a second connection could stop Hike delivering to the sync's.
+// relayCheckWait is how long `doctor --connect` waits for another command to finish with the
+// store's relay connection.
+const relayCheckWait = 15 * time.Second
+
+// checkRelay logs in to the relay and subscribes, on a connection of its own while no other
+// process has this store's relay connection. While a sync has it, it asks the sync instead: a
+// second connection could stop Hike delivering to the sync's.
 func (c *Ctx) checkRelay() (string, error) {
-	if connected, ok, pid := syncer.SyncRelayStatus(c.ctx, c.store.ControlPath()); ok {
-		if !connected {
-			return "", &mqtt.Error{Kind: mqtt.KindDisconnected, Msg: fmt.Sprintf("the running hkcli sync (pid %d) is not connected to Hike right now", pid)}
+	giveUp := time.Now().Add(relayCheckWait)
+	for {
+		lease, err := syncer.AcquireRelayLease(c.ctx, c.store, 0)
+		if err != nil {
+			return "", err
 		}
-		return fmt.Sprintf("connected through the running hkcli sync (pid %d)", pid), nil
+		if lease != nil {
+			defer lease.Release()
+			client, err := c.API()
+			if err != nil {
+				return "", err
+			}
+			relay, err := syncer.OpenMQTT(c.ctx, client, lease)
+			if err != nil {
+				return "", err
+			}
+			defer relay.Disconnect()
+			if _, err = relay.Subscribe(c.ctx, "u:"+client.Session.UserID, 1); err != nil {
+				return "", err
+			}
+			return "MQTT login and subscribe ok", nil
+		}
+		owner := syncer.RelayOwnerPID(c.store)
+		if connected, ok := syncer.SyncRelayStatus(c.ctx, c.store.ControlPath(), owner); ok {
+			if !connected {
+				return "", &mqtt.Error{Kind: mqtt.KindDisconnected, Msg: fmt.Sprintf("the running hkcli sync (pid %d) is not connected to Hike right now", owner)}
+			}
+			return fmt.Sprintf("connected through the running hkcli sync (pid %d)", owner), nil
+		}
+		if !time.Now().Before(giveUp) {
+			return "", &syncer.RelayUnavailableError{Msg: fmt.Sprintf("another hkcli process (pid %d) kept this store's relay connection busy", owner)}
+		}
+		select {
+		case <-c.ctx.Done():
+			return "", c.ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
-	client, err := c.API()
-	if err != nil {
-		return "", err
-	}
-	relay, err := syncer.OpenMQTT(c.ctx, client)
-	if err != nil {
-		return "", err
-	}
-	defer relay.Disconnect()
-	if _, err = relay.Subscribe(c.ctx, "u:"+client.Session.UserID, 1); err != nil {
-		return "", err
-	}
-	return "MQTT login and subscribe ok", nil
 }

@@ -51,7 +51,7 @@ event is one JSON object per line on stdout:
 | Event | When |
 | --- | --- |
 | `connected` | Connected to the relay |
-| `sync` | Catch-up finished (`contacts`, `chats`, `chats_fetched`, `messages`, `receipts`) |
+| `sync` | Catch-up finished (`contacts`, `chats`, `chats_fetched`, `messages`, `receipts`, `late`). `late` counts messages sent while the previous connection was listening that arrived only now: Hike had stopped delivering to it |
 | `message` | New message (`chat`, `chat_name`, `chat_type` (`one_to_one` or `group`), `id`, `sender`, `sender_name`, `from_me`, `ts`, `kind`, `text`, `file_name`, `reply_to`, `mentions` (list of `uid`, `phone`, `start`, `length`), `mentions_me`) |
 | `receipt` | Your messages were delivered or read (`chat`, `by`, `state`, `up_to`) |
 | `reaction` | Someone reacted (`chat`, `target`, `user`, `emoji`; `emoji` is null when removed) |
@@ -74,14 +74,26 @@ Only one `sync` (or `auth`) can run per store at a time; a second one exits with
 
 ## Sending while sync runs
 
-While `hkcli sync` is connected, `send`, `chats mark-read` and `doctor --connect` on the same
-store go out through its connection instead of opening a second one. Hike's relay can stop
-delivering messages to a connection once another connection of the same account appears, so
-messages would stay at one tick until sync reconnected. Sync records where to reach it in
-`sync-control.json` in the store (a port on 127.0.0.1 and a random token) and deletes the file
-when it stops. A stopping sync first finishes the sends it already took on; commands that come
-in meanwhile wait until it has gone. Without a running sync, commands connect on their own as
-before.
+Hike's relay copes badly with a second web connection of the same account: it was seen closing
+the first one, or keeping it open while it stopped delivering to it, so messages stayed at one
+tick. So hkcli keeps each store to one relay connection:
+
+- While `hkcli sync` is connected, `send`, `chats mark-read` and `doctor --connect` on the same
+  store go out through its connection. Sync records where to reach it in `sync-control.json` (a
+  port on 127.0.0.1 and a random secret) and deletes the file when it stops. Both sides prove they
+  know the secret before anything is sent.
+- Whichever process has the store's connection open holds `relay.lock`. Without a running sync, a
+  command takes the lock and connects on its own, as before. While sync waits to reconnect, it
+  lets go of the lock, so commands send on their own meanwhile.
+- A command never connects while another process holds the lock. It waits up to about 25 seconds,
+  then fails with `relay_unavailable`; nothing was sent, so you can try again.
+- A stopping sync (Ctrl+C or SIGTERM) first finishes the sends it took on, for up to 25 seconds,
+  then closes its connection; commands that come in meanwhile wait for it. A second Ctrl+C stops
+  it at once.
+
+The `via` field in the `--json` output of `send` and `chats mark-read` says which way a message
+went: `sync` or `own`. Other sessions of the same account are not coordinated: Hike Web in a
+browser, another store, or hkcli 0.4.0 and older. After upgrading hkcli, restart a running sync.
 
 ## Run sync as a service
 

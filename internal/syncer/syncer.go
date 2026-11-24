@@ -21,6 +21,7 @@ import (
 	"github.com/vinaycodeaxe/hkcli/internal/mqtt"
 	"github.com/vinaycodeaxe/hkcli/internal/protocol"
 	"github.com/vinaycodeaxe/hkcli/internal/pyjson"
+	"github.com/vinaycodeaxe/hkcli/internal/store"
 )
 
 // FmtTime formats epoch ms as local "YYYY-MM-DD HH:MM"; 0 gives "".
@@ -33,7 +34,12 @@ func FmtTime(ms int64) string {
 
 // OpenMQTT connects like Hike Web: client id web_<userId>_<ms>, user name =
 // user id, password = access token. A refused login refreshes the token once.
-func OpenMQTT(ctx context.Context, client *api.Client) (*mqtt.Client, error) {
+// The caller must own the store's relay (lease) for as long as the connection
+// stays open: Hike's relay handles a second web connection badly (control.go).
+func OpenMQTT(ctx context.Context, client *api.Client, lease *RelayLease) (*mqtt.Client, error) {
+	if !lease.held() {
+		return nil, errors.New("internal error: opening a relay connection without holding the store's relay lock")
+	}
 	for attempt := 0; ; attempt++ {
 		session := client.Session
 		c := &mqtt.Client{
@@ -158,10 +164,13 @@ type Syncer struct {
 	me            string
 	out           *Emitter
 	opts          Options
-	clientMu      sync.Mutex // guards client, publishing and stopping, used by control requests (control.go)
+	clientMu      sync.Mutex // guards client, publishing, stopping and ownsRelay, used by control requests (control.go)
 	client        *mqtt.Client
 	publishing    int
 	stopping      bool
+	ownsRelay     bool      // Follow holds the store's relay lock
+	liveSince     time.Time // when the current relay connection began listening (zero until it does)
+	missed        span      // while the last listening connection should have received everything
 	groupsFetched map[string]bool
 }
 
@@ -345,7 +354,9 @@ func (s *Syncer) learnSender(msg *protocol.Message) error {
 	return nil
 }
 
-func (s *Syncer) storeHistory(chatID string, items []any) (added, known int, err error) {
+// storeHistory stores fetched history items. late counts new messages from others sent during
+// missed.
+func (s *Syncer) storeHistory(chatID string, items []any, missed span) (added, known, late int, err error) {
 	for _, item := range items {
 		packet := protocol.PacketFromHistoryItem(item)
 		if len(packet) == 0 {
@@ -364,15 +375,19 @@ func (s *Syncer) storeHistory(chatID string, items []any) (added, known int, err
 			err = s.conn.TouchChatLast(msg)
 		}
 		if err != nil {
-			return added, known, err
+			return added, known, late, err
 		}
-		if inserted {
-			added++
-		} else {
+		switch {
+		case !inserted:
 			known++
+		case !msg.FromMe && missed.holds(msg.TS):
+			added++
+			late++
+		default:
+			added++
 		}
 	}
-	return added, known, nil
+	return added, known, late, nil
 }
 
 func (s *Syncer) initialized(chatID string) (bool, error) {
@@ -395,25 +410,25 @@ func isNone(v any) int {
 }
 
 // catchUpChat fetches the newest pages until they overlap what is stored. A
-// chat seen for the first time gets one page and a cursor for backfill.
-func (s *Syncer) catchUpChat(ctx context.Context, chatID string) (int, error) {
+// chat seen for the first time gets one page and a cursor for backfill. late
+// counts the new messages from others sent during missed.
+func (s *Syncer) catchUpChat(ctx context.Context, chatID string, missed span) (added, late int, err error) {
 	initialized, err := s.initialized(chatID)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	pages := s.opts.MaxPages
 	if !initialized {
-		pages = 1
+		pages, missed = 1, span{} // its first page can hold older history too
 	}
 	var cursor any
-	total := 0
 	for range pages {
 		items, next, err := s.api.Messages(ctx, chatID, s.opts.BatchSize, cursor)
 		if err != nil {
-			return total, err
+			return added, late, err
 		}
-		added, known, err := s.storeHistory(chatID, items)
-		total += added
+		n, known, l, err := s.storeHistory(chatID, items, missed)
+		added, late = added+n, late+l
 		if err == nil && !initialized {
 			err = s.conn.UpdateChat(chatID, "history_cursor", next, "history_done", isNone(next))
 		}
@@ -421,14 +436,14 @@ func (s *Syncer) catchUpChat(ctx context.Context, chatID string) (int, error) {
 			err = s.conn.Commit()
 		}
 		if err != nil {
-			return total, err
+			return added, late, err
 		}
 		if known > 0 || !pyjson.Truthy(next) {
 			break
 		}
 		cursor = next
 	}
-	return total, nil
+	return added, late, nil
 }
 
 // BackfillChat walks older history from the saved cursor. It returns the new
@@ -451,7 +466,7 @@ func (s *Syncer) BackfillChat(ctx context.Context, chatID string, pages int) (in
 		if err != nil {
 			return total, false, err
 		}
-		added, _, err := s.storeHistory(chatID, items)
+		added, _, _, err := s.storeHistory(chatID, items, span{})
 		total += added
 		if err == nil {
 			err = s.conn.UpdateChat(chatID, "history_cursor", next, "history_done", isNone(next))
@@ -541,14 +556,24 @@ func (s *Syncer) isStale(chat chatInfo) (bool, error) {
 	return !ok || chat.lastTS > local, err
 }
 
-// Counts summarizes a catch-up.
+// Counts summarizes a catch-up. Late counts new messages from others that were sent while the
+// previous relay connection was listening: they should have arrived on it, so Hike had stopped
+// delivering to it (see control.go).
 type Counts struct {
-	Contacts, Chats, ChatsFetched, Messages, Receipts int
+	Contacts, Chats, ChatsFetched, Messages, Receipts, Late int
 }
+
+// span is a stretch of time in epoch ms, ends excluded; the zero span holds nothing.
+type span struct{ from, to int64 }
+
+func (s span) holds(ms int64) bool { return s.from < ms && ms < s.to }
+
+// lateMargin allows for clock skew and messages in flight when a connection starts or ends.
+const lateMargin = 30 * time.Second
 
 // Pairs lists the counts as alternating keys and values, in output order.
 func (c Counts) Pairs() []any {
-	return []any{"contacts", c.Contacts, "chats", c.Chats, "chats_fetched", c.ChatsFetched, "messages", c.Messages, "receipts", c.Receipts}
+	return []any{"contacts", c.Contacts, "chats", c.Chats, "chats_fetched", c.ChatsFetched, "messages", c.Messages, "receipts", c.Receipts, "late", c.Late}
 }
 
 // CatchUp syncs contacts (optionally), the chat list, stale chats and names,
@@ -591,8 +616,9 @@ func (s *Syncer) CatchUp(ctx context.Context, contacts bool) (Counts, error) {
 		stale = stale[:limit]
 	}
 	for _, chat := range stale {
-		n, err := s.catchUpChat(ctx, chat.id)
+		n, late, err := s.catchUpChat(ctx, chat.id, s.missed)
 		counts.Messages += n
+		counts.Late += late
 		if err != nil {
 			return counts, err
 		}
@@ -965,14 +991,25 @@ func retryable(err error) bool {
 }
 
 // Follow stays connected, stores everything that arrives and reconnects on
-// drops (backoff 1 s doubling to 60 s). It returns why it stopped: "idle" after
-// idleExit without events, "interrupted" when ctx is cancelled.
-func (s *Syncer) Follow(ctx context.Context, idleExit, maxReconnect *time.Duration) (string, error) {
+// drops (backoff 1 s doubling to 60 s). It holds the store's relay lock while it
+// connects, listens and closes its connection, and lets go of it while it waits
+// to reconnect, so other commands can send on a connection of their own
+// meanwhile. It returns why it stopped: "idle" after idleExit without events,
+// "interrupted" when ctx is cancelled.
+func (s *Syncer) Follow(ctx context.Context, st *store.Store, idleExit, maxReconnect *time.Duration) (string, error) {
 	backoff, first := time.Second, true
 	var downSince time.Time
 	for ctx.Err() == nil {
-		client, err := OpenMQTT(ctx, s.api)
+		lease, err := s.takeRelay(ctx, st)
 		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
+			return "", err
+		}
+		client, err := OpenMQTT(ctx, s.api, lease)
+		if err != nil {
+			s.releaseRelay(lease)
 			if ctx.Err() != nil {
 				break
 			}
@@ -992,28 +1029,30 @@ func (s *Syncer) Follow(ctx context.Context, idleExit, maxReconnect *time.Durati
 		}
 		s.setClient(client)
 		downSince = time.Time{}
+		s.liveSince = time.Time{}
 		reason, err := s.listen(ctx, client, &first, &backoff, idleExit)
-		// Control requests wait for the next connection, or for this sync to go when it stops.
-		s.detachClient(ctx.Err() != nil || reason != "" || err != nil && !retryable(err))
-		s.drainPublishes(controlDrainTimeout)
-		if err != nil && ctx.Err() == nil && retryable(err) {
+		reconnect := err != nil && ctx.Err() == nil && retryable(err)
+		// Hand-offs now wait for the next connection, or hear that this sync is stopping.
+		s.detachClient(!reconnect)
+		if reconnect {
+			if !s.liveSince.IsZero() {
+				// What the next catch-up finds from this stretch never arrived live (Counts.Late).
+				s.missed = span{s.liveSince.Add(lateMargin).UnixMilli(), time.Now().Add(-lateMargin).UnixMilli()}
+			}
 			s.out.Status(fmt.Sprintf("connection lost (%v); reconnecting in %.0fs", err, backoff.Seconds()))
 			s.out.Emit("disconnected", "reason", err.Error())
+		}
+		// Close the connection before waiting to reconnect: a failed catch-up leaves it open.
+		s.closeRelay(client)
+		s.releaseRelay(lease)
+		switch {
+		case reconnect:
 			_ = wait(ctx, backoff)
 			backoff = min(backoff*2, 60*time.Second)
-			err = nil
-		}
-		if client.Connected() {
-			_, _ = PublishPacket(context.Background(), client, s.me, protocol.BuildPresence(s.me, false), 0)
-		}
-		client.Disconnect()
-		if ctx.Err() != nil {
-			break
-		}
-		if err != nil {
+		case ctx.Err() != nil: // the loop ends
+		case err != nil:
 			return "", err
-		}
-		if reason != "" {
+		case reason != "":
 			return reason, nil
 		}
 	}
@@ -1033,8 +1072,12 @@ func (s *Syncer) listen(ctx context.Context, client *mqtt.Client, first *bool, b
 		return "", err
 	}
 	*first, *backoff = false, time.Second
+	s.liveSince = time.Now()
 	if !s.out.JSON {
 		s.out.Status(fmt.Sprintf("caught up: %d new messages in %d chats", counts.Messages, counts.ChatsFetched))
+		if counts.Late > 0 {
+			s.out.Status(fmt.Sprintf("%d of them were sent while the previous connection was up but never arrived on it: Hike had stopped delivering to it (is the account open in Hike Web or another hkcli store?)", counts.Late))
+		}
 	}
 	s.out.Status("listening for new messages (Ctrl+C to stop)")
 	lastActivity := time.Now()

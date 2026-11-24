@@ -474,6 +474,27 @@ func (c *Client) Disconnect() {
 	c.finish(reason)
 }
 
+// Close drops the link at once, without the DISCONNECT that Disconnect writes first (that write
+// can wait behind a stuck one for its whole deadline). Calls still waiting on the broker fail. It
+// is safe to call more than once, also while Disconnect runs.
+func (c *Client) Close() {
+	if c.ws == nil {
+		return
+	}
+	c.mu.Lock()
+	c.closing = true
+	c.mu.Unlock()
+	c.ws.Close()
+	select {
+	case <-c.readerEnd:
+	case <-time.After(5 * time.Second):
+	}
+	c.mu.Lock()
+	reason := orDefault(c.reason, "client closed")
+	c.mu.Unlock()
+	c.finish(reason)
+}
+
 func (c *Client) finish(reason string) {
 	c.mu.Lock()
 	if c.closed {

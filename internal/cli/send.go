@@ -82,14 +82,14 @@ func (c *Ctx) runSendText(to, message, replyTo string) error {
 		return err
 	}
 	packet := protocol.BuildText(session.UserID, chatID, text, reply)
-	serverID, err := c.sendPacket(packet)
+	serverID, via, err := c.sendPacket(packet)
 	if err != nil {
 		return err
 	}
 	if err := c.storeSent(packet, serverID); err != nil {
 		return err
 	}
-	data := pyjson.O("to", chatID, "name", name, "client_id", packet.Get("i"), "server_id", nullable(serverID), "ts", packet.Get("ts"))
+	data := pyjson.O("to", chatID, "name", name, "client_id", packet.Get("i"), "server_id", nullable(serverID), "ts", packet.Get("ts"), "via", via)
 	c.output(data, func() {
 		c.println(fmt.Sprintf("Sent to %s (message id %s).", name, pyjson.Str(pyjson.Or(nullable(serverID), packet.Get("i")))))
 	})
@@ -140,14 +140,14 @@ func (c *Ctx) runSendFile(o sendFileOptions) error {
 		return err
 	}
 	packet := protocol.BuildFile(me, chatID, protocol.File{ID: fileID, Name: base, MIME: mime, Caption: o.caption, Size: info.Size()}, reply)
-	serverID, err := c.sendPacket(packet)
+	serverID, via, err := c.sendPacket(packet)
 	if err != nil {
 		return err
 	}
 	if err := c.storeSent(packet, serverID); err != nil {
 		return err
 	}
-	data := pyjson.O("to", chatID, "name", name, "client_id", packet.Get("i"), "server_id", nullable(serverID), "file_id", fileID, "ts", packet.Get("ts"))
+	data := pyjson.O("to", chatID, "name", name, "client_id", packet.Get("i"), "server_id", nullable(serverID), "file_id", fileID, "ts", packet.Get("ts"), "via", via)
 	c.output(data, func() {
 		c.println(fmt.Sprintf("Sent %s to %s (message id %s).", base, name, pyjson.Str(pyjson.Or(nullable(serverID), packet.Get("i")))))
 	})

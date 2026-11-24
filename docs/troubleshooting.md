@@ -37,10 +37,16 @@ day, or use QR login if the Hike app is logged in to this number.
 
 ## Messages stay at one tick while sync runs
 
-Update to hkcli 0.4.0 or newer. Older versions opened a second relay connection for every
-`send`, after which Hike could stop delivering messages to the running `sync` until it
-reconnected. Now commands send through the running sync; see
-[Sending while sync runs](sync.md#sending-while-sync-runs).
+Update to hkcli 0.4.1 or newer, then restart `sync`. Older versions could open a second relay
+connection for a `send`, after which Hike could stop delivering messages to the running `sync`
+until it reconnected; see [Sending while sync runs](sync.md#sending-while-sync-runs). If it still
+happens, look for another session of the same account: Hike Web open in a browser, or another
+hkcli store. `sync --json` then reports `late` messages in its `sync` events after reconnecting.
+
+## "relay_unavailable"
+
+Another hkcli process on this store kept its relay connection busy for about 25 seconds, so the
+command sent nothing. Try again. If it keeps happening, check for a stuck hkcli process.
 
 ## "another hkcli process is already running sync"
 

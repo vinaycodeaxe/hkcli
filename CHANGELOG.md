@@ -7,6 +7,42 @@ section for each tagged version into the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-24
+
+### Fixed
+
+- A store now has at most one relay connection, also while `hkcli sync` starts, reconnects or
+  stops. Whichever process has the connection open holds the new `relay.lock` in the store; other
+  commands send through a running sync, or wait for the lock and then connect on their own. In
+  0.4.0 a command could still open a second connection next to a sync that was reconnecting,
+  starting, or slow to stop.
+- While sync waits to reconnect, commands send on a short-lived connection of their own instead
+  of waiting for it.
+- `hkcli sync` also stops gracefully on SIGTERM (systemd, launchd, `kill`): it finishes the sends
+  it took on and removes `sync-control.json`. A second SIGTERM changes nothing; a second Ctrl+C
+  still stops it at once. Closing a connection takes at most about 30 seconds.
+- Commands send nothing to the address in `sync-control.json` until it proves it belongs to the
+  running sync, so a leftover file whose port another program took over learns nothing.
+- `sync` stops with an error when it cannot open the local endpoint other commands send through.
+- OpenClaw channel: the sync is asked to stop only once. A second stop request made hkcli quit
+  before it finished the replies it took on.
+
+### Added
+
+- `send` and `chats mark-read` report in their `--json` output how the message went out: `via` is
+  `sync` (through the running sync) or `own` (on a connection of its own).
+- Error code `relay_unavailable`: another hkcli process kept the store's relay connection busy.
+  Nothing was sent, so trying again is safe; the OpenClaw channel treats it that way.
+- The `sync` event counts `late` messages: messages sent while the connection was listening that
+  arrived only through the catch-up after it reconnected, a sign that Hike had stopped delivering
+  to it. The OpenClaw channel logs a warning for them.
+
+### Changed
+
+- OpenClaw channel 0.2.0 needs hkcli 0.4.1 or newer (the 0.4.0 notes said 0.4.0).
+- After upgrading hkcli, restart any running `hkcli sync` (for OpenClaw, restart the Gateway or
+  the Hike channel). hkcli 0.4.0 and older do not use `relay.lock`.
+
 ## [0.4.0] - 2026-11-24
 
 ### Fixed

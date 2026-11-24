@@ -12,7 +12,7 @@ Full guide: https://vinaycodeaxe.github.io/hkcli/openclaw-channel.html
 ## Requirements
 
 - OpenClaw 2026.11.6 or newer, with a local Gateway.
-- hkcli 0.4.0 or newer on the Gateway host:
+- hkcli 0.4.1 or newer on the Gateway host:
   `go install github.com/vinaycodeaxe/hkcli/cmd/hkcli@latest`, or a binary from
   https://github.com/vinaycodeaxe/hkcli/releases.
 - A phone with the Hike account the agent should use.
@@ -102,8 +102,10 @@ running next to the named ones.
   12 hours back. Hike history from before the first start is never answered; after a logout, or
   when another Hike number is linked, the channel starts fresh the same way.
 - Changes to bindings, agents and session settings apply to the next message without a restart.
-- Replies go out over the channel's own Hike connection (hkcli 0.4.0), so Hike keeps delivering
-  new messages after the agent answers.
+- Replies go out over the channel's own Hike connection (hkcli 0.4.1), so Hike keeps delivering
+  new messages after the agent answers. If the Gateway log warns about `late` messages, Hike
+  stopped delivering anyway: the account is probably also open elsewhere (Hike Web in a browser,
+  another hkcli store), and the agent did not see group messages from that time.
 
 ## Gotchas
 
@@ -116,14 +118,16 @@ running next to the named ones.
 - The Gateway service may not have `~/go/bin` on its PATH: set `cliPath` to hkcli's full path.
 - Groups are matched by id, never by name, and need an @mention by default.
 - Slow replies come from the agent's model, not Hike: route Hike to a faster agent.
+- On Windows the Gateway stops hkcli at once (Windows has no Ctrl+C signal for it), so a reply
+  that was going out at that moment may be lost.
 - OpenClaw may warn `provenance-invalid` when installing community plugins from ClawHub; the
   plugin still installs and works.
 
 ## Troubleshooting
 
-- `hkcli was not found` / `too old`: install hkcli 0.4.0+ or set `channels.hike.cliPath`.
-- Messages stay at one tick and get no answer: update hkcli to 0.4.0 or newer, then restart the
-  channel. Older versions sent each reply over a second Hike connection, after which Hike could
+- `hkcli was not found` / `too old`: install hkcli 0.4.1+ or set `channels.hike.cliPath`.
+- Messages stay at one tick and get no answer: update hkcli to 0.4.1 or newer, then restart the
+  channel. Older versions could send a reply over a second Hike connection, after which Hike could
   stop delivering to the channel.
 - `not linked`: run `openclaw channels login --channel hike`.
 - Login says the account is running: stop it first with

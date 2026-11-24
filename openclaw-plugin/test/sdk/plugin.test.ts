@@ -221,6 +221,12 @@ describe("outbound", () => {
       assert.equal(error.retryable, false);
       return true;
     });
+    process.env.FAKE_HKCLI_SEND = "relay_unavailable";
+    await assert.rejects(sendHikeText(account, { to: "2002", text: "hi" }), (error) => {
+      assert.ok(error instanceof PlatformMessageNotDispatchedError);
+      assert.equal(error.retryable, true);
+      return true;
+    });
     process.env.FAKE_HKCLI_SEND = "relay_error";
     await assert.rejects(sendHikeText(account, { to: "2002", text: "hi" }), (error) => {
       assert.equal(error instanceof PlatformMessageNotDispatchedError, false);

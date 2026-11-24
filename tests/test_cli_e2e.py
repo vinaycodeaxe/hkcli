@@ -17,6 +17,11 @@ def _session(store: Path) -> dict:
     return json.loads((store / "session.json").read_text(encoding="utf-8"))
 
 
+def _start(cli, *args) -> subprocess.Popen:
+    return subprocess.Popen([str(cli.bin), "--json", *args], env=dict(os.environ), stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+
+
 def test_qr_login_saves_session_and_syncs(fake, store, cli, logged_in):
     session = _session(store)
     assert (session["user_id"], session["access_token"], session["login_method"]) == (USER, fake.access_token, "qr")
@@ -156,7 +161,7 @@ def test_commands_publish_through_a_running_sync(fake, store, cli, logged_in):
         code, out, err = cli("send", "text", "--to", "Asha", "--message", "one connection")
         assert code == 0, err
         assert fake.packets("m")[-1]["d"]["m"] == "one connection"
-        assert re.fullmatch(r"\d+:\d+", out["data"]["server_id"])
+        assert re.fullmatch(r"\d+:\d+", out["data"]["server_id"]) and out["data"]["via"] == "sync"
         assert cli("chats", "mark-read", "--chat", "Asha")[0] == 0
         relay = next(c for c in cli("doctor", "--connect")[1]["data"]["checks"] if c["check"] == "relay")
         assert relay["ok"] and "running hkcli sync" in relay["detail"], relay
@@ -168,7 +173,49 @@ def test_commands_publish_through_a_running_sync(fake, store, cli, logged_in):
     assert not (store / "sync-control.json").exists()
 
     code, out, err = cli("send", "text", "--to", "Asha", "--message", "no sync running")
-    assert code == 0 and len(fake.mqtt_connects) == connects + 1, err
+    assert code == 0 and out["data"]["via"] == "own" and len(fake.mqtt_connects) == connects + 1, err
+
+
+def test_sync_waits_while_a_command_sends_on_its_own_connection(fake, store, cli, logged_in):
+    fake.reset_relay_peak()
+    fake.puback_delay = 3.0
+    send = _start(cli, "send", "text", "--to", "Asha", "--message", "before sync")
+    procs = [send]
+    try:
+        assert fake.wait_for(lambda: any(p.get("d", {}).get("m") == "before sync" for p in fake.packets("m"))), "the send never reached the relay"
+        sync = _start(cli, "sync", "--idle-exit", "3")
+        procs.append(sync)
+        out, err = send.communicate(timeout=30)
+        assert send.returncode == 0 and json.loads(out)["data"]["via"] == "own", err
+        out, err = sync.communicate(timeout=40)
+        assert sync.returncode == 0, err
+    finally:
+        for proc in procs:
+            proc.kill()
+    statuses = [e.get("message", "") for e in map(json.loads, out.splitlines()) if e["event"] == "status"]
+    assert any("waiting for another hkcli process" in s for s in statuses), statuses
+    assert fake.peak_open_relays == 1, "two relay connections were open at once"
+
+
+def test_commands_send_on_their_own_while_sync_waits_to_reconnect(fake, store, cli, logged_in):
+    # A failed catch-up makes sync close its connection and wait (1 s, 2 s, then 4 s) before trying
+    # again. Meanwhile commands may connect on their own, but never next to the sync's connection.
+    fake.reset_relay_peak()
+    fake.fail_conversations = 3
+    sync = _start(cli, "sync", "--idle-exit", "4")
+    try:
+        assert fake.wait_for(lambda: fake.fail_conversations == 0 and fake.open_relays == 0, timeout=20), "sync did not retry its catch-up"
+        code, out, err = cli("send", "text", "--to", "Asha", "--message", "while sync waits")
+        assert code == 0 and out["data"]["via"] == "own", err
+        assert fake.wait_for(lambda: fake.packets("fdr"), timeout=20), "sync never finished its catch-up"
+        code, out, err = cli("send", "text", "--to", "Asha", "--message", "after the catch-up")
+        assert code == 0 and out["data"]["via"] == "sync", err
+        out, err = sync.communicate(timeout=40)
+    finally:
+        sync.kill()
+    assert sync.returncode == 0, err
+    assert [e["event"] for e in map(json.loads, out.splitlines())].count("disconnected") == 3
+    assert fake.peak_open_relays == 1, "two relay connections were open at once"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="stops sync with SIGINT")

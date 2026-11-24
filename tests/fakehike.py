@@ -46,6 +46,7 @@ class FakeHike:
         self.open_relays = 0  # accepted relay connections that are still open
         self.peak_open_relays = 0
         self.puback_delay = 0.0  # seconds Hike takes to acknowledge a chat message
+        self.fail_conversations = 0  # how many chat list requests fail (a failed catch-up)
         self.qr_device_ids: list[str] = []
         self.otp_requests: list[dict] = []
         self.logout_requests: list[dict] = []
@@ -249,6 +250,11 @@ class FakeHike:
                 return self._reply(h, 405, {"success": False, "code": "BAD_REQUEST", "message": "Method not supported"})
             return self._reply(h, 200, {"success": True, "data": {"lastSeen": "EVERYBODY"}})
         if path == "/msg-history/v1/conversations/web":
+            with self.lock:
+                failing = self.fail_conversations > 0
+                self.fail_conversations -= failing
+            if failing:
+                return self._reply(h, 503, {"success": False, "code": "SERVICE_UNAVAILABLE", "message": "try again later"})
             return self._reply(h, 200, {"success": True, "data": {"items": self.conversations}})
         if path.startswith("/msg-history/v1/messages/fetch/"):
             chat = path.rsplit("/", 1)[-1]
