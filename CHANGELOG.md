@@ -15,7 +15,8 @@ section for each tagged version into the GitHub release notes.
   out through its relay connection instead of opening a second one. After a second connection of
   the account appeared, Hike could stop delivering messages to the running sync, so they stayed
   at one tick until it reconnected. This hit the OpenClaw channel, whose replies use
-  `hkcli send`, mostly in groups. The sync records its local endpoint in `sync-control.json`.
+  `hkcli send`, mostly in groups. The sync records its local endpoint in `sync-control.json`; when
+  it stops, it finishes the sends it took on before it disconnects.
 - OpenClaw channel 0.1.2: changes to bindings, agents and session settings now apply to the next
   Hike message. Before, they needed a restart of the Hike channel.
 

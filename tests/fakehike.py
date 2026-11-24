@@ -43,6 +43,9 @@ class FakeHike:
         self.published: list[tuple[str, dict]] = []
         self.mqtt_connects: list[dict] = []
         self.sessions: list[dict] = []
+        self.open_relays = 0  # accepted relay connections that are still open
+        self.peak_open_relays = 0
+        self.puback_delay = 0.0  # seconds Hike takes to acknowledge a chat message
         self.qr_device_ids: list[str] = []
         self.otp_requests: list[dict] = []
         self.logout_requests: list[dict] = []
@@ -157,6 +160,10 @@ class FakeHike:
             sessions = list(self.sessions)
         for session in sessions:
             session["ws"].close()
+
+    def reset_relay_peak(self) -> None:
+        with self.lock:
+            self.peak_open_relays = self.open_relays
 
     def push(self, packet: dict) -> None:
         """Deliver a packet to every subscribed relay session (QoS 1)."""
@@ -347,6 +354,8 @@ class FakeHike:
             with self.lock:
                 if session in self.sessions:
                     self.sessions.remove(session)
+                if session.pop("open", False):
+                    self.open_relays -= 1
 
     def _mqtt_packet(self, session, first: int, body: bytes) -> bool:
         ws, ptype = session["ws"], first >> 4
@@ -369,6 +378,10 @@ class FakeHike:
                 ws.close()
                 return False
             session["user"] = username
+            with self.lock:
+                session["open"] = True
+                self.open_relays += 1
+                self.peak_open_relays = max(self.peak_open_relays, self.open_relays)
         elif ptype == 8:  # SUBSCRIBE
             pid = struct.unpack_from("!H", body, 0)[0]
             n = struct.unpack_from("!H", body, 2)[0]
@@ -397,6 +410,7 @@ class FakeHike:
                 ack = struct.pack("!H", len(server_id)) + server_id
                 echo = dict(packet, s=server_id.decode())
                 threading.Thread(target=self.push, args=(echo,), daemon=True).start()
+                time.sleep(self.puback_delay)
             if qos == 1:
                 ws.send(self._frame(0x40, struct.pack("!H", pid) + ack))
         elif ptype == 12:  # PINGREQ

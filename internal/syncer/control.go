@@ -42,8 +42,11 @@ type controlResponse struct {
 	ServerID  string `json:"server_id,omitempty"`
 	Connected bool   `json:"connected,omitempty"`
 	// Sent is false when nothing reached the relay, so the caller can still publish itself.
-	Sent  bool   `json:"sent"`
-	Error string `json:"error,omitempty"`
+	Sent bool `json:"sent"`
+	// Stopping: the sync's relay connection may still be finishing publishes, so the caller
+	// waits until the sync has gone before it connects on its own.
+	Stopping bool   `json:"stopping,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 const (
@@ -56,14 +59,16 @@ const (
 	controlStatusTimeout  = 5 * time.Second
 	// How long a closing connection waits for publishes other commands started on it.
 	controlDrainTimeout = 25 * time.Second
+	// How long a command waits for a stopping sync to go before it connects on its own anyway.
+	controlStoppingWait = 40 * time.Second
 	maxControlRequest   = 8 << 20
 )
 
 type controlPublisher func(ctx context.Context, payload []byte, qos byte) controlResponse
 
 // ServeControl lets other hkcli commands on this store publish over the sync's relay
-// connection until ctx ends or stop is called. It records the endpoint in path and removes it
-// again on stop.
+// connection. Once ctx ends it answers that the sync is stopping, until stop is called after
+// the relay connection closed; stop removes the endpoint recorded in path.
 func (s *Syncer) ServeControl(ctx context.Context, path string) (stop func(), err error) {
 	return serveControl(ctx, path, s.controlPublish, s.relayConnected)
 }
@@ -108,7 +113,7 @@ func serveControl(ctx context.Context, path string, publish controlPublisher, co
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
-			// New requests fail fast and fall back to their own connection from here on.
+			// Commands waiting on a stopping sync now connect on their own.
 			ln.Close()
 			if current, ok := readControlEndpoint(path); ok && current.Token == endpoint.Token {
 				_ = os.Remove(path)
@@ -117,7 +122,6 @@ func serveControl(ctx context.Context, path string, publish controlPublisher, co
 			handlers.Wait()
 		})
 	}
-	context.AfterFunc(ctx, func() { go stop() })
 	return stop, nil
 }
 
@@ -137,12 +141,12 @@ func serveControlConn(ctx context.Context, conn net.Conn, token string, publish 
 		resp.Error = "malformed request"
 	case subtle.ConstantTimeCompare([]byte(req.Token), []byte(token)) != 1:
 		resp.Error = "wrong control token"
+	case ctx.Err() != nil:
+		resp.Error, resp.Stopping = "sync is stopping", true
 	case req.Op == "status":
 		resp.OK, resp.Connected = true, connected()
-	case req.Op == "publish" && ctx.Err() == nil:
-		resp = publish(ctx, []byte(req.Payload), req.QoS)
 	case req.Op == "publish":
-		resp.Error = "sync is stopping"
+		resp = publish(ctx, []byte(req.Payload), req.QoS)
 	default:
 		resp.Error = "unknown operation " + strconv.Quote(req.Op)
 	}
@@ -228,18 +232,13 @@ func (s *Syncer) controlPublish(ctx context.Context, payload []byte, qos byte) c
 // is recorded at path. handled is false when no sync took it and nothing was sent: the caller
 // then publishes over a connection of its own.
 func PublishViaSync(ctx context.Context, path string, payload []byte, qos byte) (serverID string, handled bool, err error) {
-	endpoint, ok := readControlEndpoint(path)
-	if !ok {
-		return "", false, nil
-	}
-	resp, sent, err := callControl(ctx, endpoint, controlRequest{Op: "publish", Payload: string(payload), QoS: qos}, controlPublishTimeout)
+	resp, pid, sent, err := callRunningSync(ctx, path, controlRequest{Op: "publish", Payload: string(payload), QoS: qos}, controlPublishTimeout)
 	switch {
-	case err != nil && !sent:
+	case ctx.Err() != nil:
+		return "", true, ctx.Err()
+	case pid == 0 || err != nil && !sent:
 		return "", false, nil
 	case err != nil:
-		if ctx.Err() != nil {
-			return "", true, ctx.Err()
-		}
 		return "", true, &mqtt.Error{Kind: mqtt.KindTimeout, Msg: fmt.Sprintf("the running hkcli sync did not answer (%v); the message may or may not have been sent", err)}
 	case !resp.OK && !resp.Sent:
 		return "", false, nil
@@ -252,15 +251,37 @@ func PublishViaSync(ctx context.Context, path string, payload []byte, qos byte) 
 // SyncRelayStatus asks a `sync` running on the same store whether its relay connection is up.
 // ok is false when no sync answered.
 func SyncRelayStatus(ctx context.Context, path string) (connected, ok bool, pid int) {
-	endpoint, found := readControlEndpoint(path)
-	if !found {
+	resp, pid, _, err := callRunningSync(ctx, path, controlRequest{Op: "status"}, controlStatusTimeout)
+	if pid == 0 || err != nil || !resp.OK {
 		return false, false, 0
 	}
-	resp, _, err := callControl(ctx, endpoint, controlRequest{Op: "status"}, controlStatusTimeout)
-	if err != nil || !resp.OK {
-		return false, false, 0
+	return resp.Connected, true, pid
+}
+
+// callRunningSync sends req to the sync recorded at path. While that sync is stopping it waits
+// (up to controlStoppingWait) until the sync has gone, so the caller never opens a relay
+// connection next to the sync's. pid is 0 when no running sync answered.
+func callRunningSync(ctx context.Context, path string, req controlRequest, timeout time.Duration) (resp controlResponse, pid int, sent bool, err error) {
+	deadline := time.Now().Add(controlStoppingWait)
+	for {
+		endpoint, ok := readControlEndpoint(path)
+		if !ok {
+			return resp, 0, false, nil
+		}
+		resp, sent, err = callControl(ctx, endpoint, req, timeout)
+		if err != nil && !sent {
+			return resp, 0, false, ctx.Err() // the sync has exited (or never answered)
+		}
+		if err != nil || !resp.Stopping {
+			return resp, endpoint.PID, sent, err
+		}
+		if !time.Now().Before(deadline) {
+			return resp, 0, false, nil
+		}
+		if err := wait(ctx, 200*time.Millisecond); err != nil {
+			return resp, 0, false, err
+		}
 	}
-	return resp.Connected, true, endpoint.PID
 }
 
 // callControl sends one request. sent reports whether the request reached the sync, so a

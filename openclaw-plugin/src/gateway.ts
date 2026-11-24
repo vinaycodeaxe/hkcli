@@ -27,8 +27,10 @@ import { stopChild, superviseProcess, type SupervisedExit } from "./supervisor.t
 import { SyncProcessTracker, type SyncProcessRecord } from "./sync-process.ts";
 
 const accountRuns = new AccountRuns();
-/** A replaced run takes up to ~65 s to stop: replies in flight (60 s), then hkcli (5 s). */
-const PREVIOUS_RUN_WAIT_MS = 90_000;
+/** hkcli sync finishes sends it took on for `hkcli send` before it disconnects (up to 25 s). */
+const SYNC_STOP_GRACE_MS = 30_000;
+/** A replaced run takes up to ~90 s to stop: hkcli (30 s), then replies in flight (60 s). */
+const PREVIOUS_RUN_WAIT_MS = 120_000;
 
 function createLog(ctx: ChannelGatewayContext<ResolvedHikeAccount>, core: PluginRuntime): HikeLog {
   if (ctx.log) {
@@ -198,7 +200,7 @@ async function runHikeAccount(
     restartSync: () => {
       if (child && child.exitCode === null && child.signalCode === null) {
         restartRequested = true;
-        stopChild(child);
+        stopChild(child, SYNC_STOP_GRACE_MS);
       }
     },
     signal: abort.signal,
@@ -210,6 +212,7 @@ async function runHikeAccount(
   try {
     await superviseProcess({
       signal: abort.signal,
+      stopGraceMs: SYNC_STOP_GRACE_MS,
       spawn: () => spawnHkcli(command, hkcliArgs.sync(account.storeDir)),
       onStart: (started) => {
         child = started;

@@ -7,7 +7,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/vinaycodeaxe/hkcli/internal/mqtt"
 )
@@ -96,6 +98,26 @@ func TestPublishViaSyncReportsAPublishThatMayHaveGoneOut(t *testing.T) {
 	var relayErr *mqtt.Error
 	if !handled || !errors.As(err, &relayErr) || relayErr.Msg != "Hike did not confirm delivery after 3 attempts" {
 		t.Fatalf("handled=%v err=%v; want the sync's relay error, without a second attempt", handled, err)
+	}
+}
+
+func TestPublishWaitsUntilAStoppingSyncHasGone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	path := filepath.Join(t.TempDir(), "sync-control.json")
+	stop, err := serveControl(ctx, path, func(context.Context, []byte, byte) controlResponse {
+		t.Error("a stopping sync took a new publish")
+		return controlResponse{}
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	cancel() // stopping: the sync's relay connection may still be finishing a publish
+	var stopped atomic.Bool
+	time.AfterFunc(300*time.Millisecond, func() { stopped.Store(true); stop() })
+	_, handled, err := PublishViaSync(context.Background(), path, []byte("{}"), 1)
+	if handled || err != nil || !stopped.Load() {
+		t.Fatalf("handled=%v err=%v stopped=%v; want a fallback only once the sync has gone", handled, err, stopped.Load())
 	}
 }
 

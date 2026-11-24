@@ -79,7 +79,9 @@ store go out through its connection instead of opening a second one. Hike's rela
 delivering messages to a connection once another connection of the same account appears, so
 messages would stay at one tick until sync reconnected. Sync records where to reach it in
 `sync-control.json` in the store (a port on 127.0.0.1 and a random token) and deletes the file
-when it stops. Without a running sync, commands connect on their own as before.
+when it stops. A stopping sync first finishes the sends it already took on; commands that come
+in meanwhile wait until it has gone. Without a running sync, commands connect on their own as
+before.
 
 ## Run sync as a service
 
